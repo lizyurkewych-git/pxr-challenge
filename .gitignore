@@ -1,5 +1,6 @@
 data/
-models/checkpoints/
+models/
+submissions/
 .venv/
 *.pyc
 __pycache__/
