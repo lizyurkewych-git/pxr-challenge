@@ -14,7 +14,7 @@ OpenADMET PXR Blind Challenge — Activity Prediction Track
 | # | Script | Models | CV RAE | Leaderboard RAE |
 |---|--------|--------|--------|-----------------|
 | 1 | `baseline_submission.py` | kNN + LightGBM | ~0.76 | 0.7999 |
-| 2 | `submission2_gbm_ensemble.py` | kNN + LGBM + XGBoost + RF (inv-RAE ensemble) | 0.6508 | TBD |
+| 2 | `submission2_gbm_ensemble.py` | kNN + LGBM + XGBoost + RF (inv-RAE ensemble) | 0.6508 | 0.7962 |
 
 ---
 
