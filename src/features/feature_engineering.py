@@ -196,7 +196,8 @@ def mordred_descriptors(
 
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        result = calc.pandas(mols)
+        # nproc=1: force serial computation — multiprocessing Manager crashes on macOS Python 3.11
+        result = calc.pandas(mols, nproc=1)
 
     # Convert to numeric; non-numeric values → NaN
     result = result.apply(pd.to_numeric, errors="coerce")
@@ -244,6 +245,8 @@ class FeaturePipeline:
         self._var_selector = None
         self._pca = None
         self._rdkit_medians: Optional[pd.Series] = None
+        self._mordred_cols: Optional[list] = None  # columns retained at fit time
+        self._mordred_col_medians: Optional[dict] = None  # per-column medians for imputation
         self._fitted = False
 
     def _build_fp_block(self, smiles: Sequence[str]) -> np.ndarray:
@@ -279,6 +282,10 @@ class FeaturePipeline:
         if self.include_mordred:
             mordred_df = mordred_descriptors(smiles)
             if mordred_df.shape[1] > 0:
+                # Save column list and per-column medians so transform() uses identical columns
+                self._mordred_cols = list(mordred_df.columns)
+                self._mordred_col_medians = mordred_df.median().to_dict()
+
                 mordred_block = mordred_df.values.astype(np.float32)
 
                 self._var_selector = VarianceThreshold(threshold=0.01)
@@ -311,6 +318,11 @@ class FeaturePipeline:
         if self.include_mordred and self._pca is not None:
             mordred_df = mordred_descriptors(smiles)
             if mordred_df.shape[1] > 0:
+                # Align to the exact columns seen at fit time; fill missing with train medians
+                mordred_df = mordred_df.reindex(columns=self._mordred_cols)
+                for col, med in self._mordred_col_medians.items():
+                    if mordred_df[col].isna().any():
+                        mordred_df[col] = mordred_df[col].fillna(med)
                 mordred_block = mordred_df.values.astype(np.float32)
                 mordred_block = self._var_selector.transform(mordred_block)
                 mordred_block = self._scaler.transform(mordred_block)

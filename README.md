@@ -15,6 +15,7 @@ OpenADMET PXR Blind Challenge — Activity Prediction Track
 |---|--------|--------|--------|-----------------|
 | 1 | `baseline_submission.py` | kNN + LightGBM | ~0.76 | 0.7999 |
 | 2 | `submission2_gbm_ensemble.py` | kNN + LGBM + XGBoost + RF (inv-RAE ensemble) | 0.6508 | 0.7962 |
+| 3 | `submission3_chemprop.py` | Chemprop D-MPNN + kNN + LGBM + XGBoost + RF (inv-RAE ensemble) | pending | pending |
 
 ---
 
@@ -27,6 +28,17 @@ Ensemble of Tanimoto k-nearest-neighbor (kNN) and LightGBM regression using:
 - Count-based Morgan fingerprints
 - RDKit physicochemical descriptors (~50)
 - Mordred 2D descriptors (PCA-compressed to 200 dimensions)
+
+### Submission 3 — Chemprop D-MPNN + GBM ensemble
+
+Adds a Chemprop v2 message-passing neural network (D-MPNN) trained directly on molecular graphs:
+- Chemprop D-MPNN (hidden_size=300, depth=3, 100 epochs) with snapshot ensembling (last 5 epoch checkpoints averaged)
+- MPS (Apple Silicon) acceleration
+- Same kNN + LightGBM + XGBoost + RF models from Submission 2
+- All five models combined via inverse-RAE weights
+- Chemprop must be trained *before* Mordred multiprocessing to avoid a semaphore crash on macOS Python 3.11
+
+Requires Python 3.11 (`chemprop>=2.1.0`).
 
 ### Submission 2 — 4-model inverse-RAE weighted ensemble
 
@@ -69,7 +81,13 @@ cd pxr-challenge-public
 python scripts/submission2_gbm_ensemble.py
 ```
 
-Both scripts will:
+Submission 3 (Chemprop + GBM ensemble, requires Python 3.11):
+```bash
+cd pxr-challenge-public
+.venv311/bin/python scripts/submission3_chemprop.py
+```
+
+All scripts will:
 - Download all four data tiers from HuggingFace (cached to `data/hf_cache/`)
 - Compute fingerprints and descriptors
 - Run scaffold-stratified 5-fold CV and print RAE per fold
@@ -84,7 +102,8 @@ Both scripts will:
 pxr-challenge-public/
 ├── scripts/
 │   ├── baseline_submission.py         # Submission 1: kNN + LightGBM
-│   └── submission2_gbm_ensemble.py    # Submission 2: kNN + LGBM + XGBoost + RF ensemble
+│   ├── submission2_gbm_ensemble.py    # Submission 2: kNN + LGBM + XGBoost + RF ensemble
+│   └── submission3_chemprop.py        # Submission 3: Chemprop D-MPNN + GBM ensemble
 ├── src/
 │   ├── data/
 │   │   ├── load_data.py               # HuggingFace loading, SMILES canonicalization,
@@ -94,7 +113,8 @@ pxr-challenge-public/
 │   │   └── feature_engineering.py     # ECFP4/6, FCFP4, RDKit, Mordred, Tanimoto utils
 │   ├── models/
 │   │   ├── local_models.py            # TanimotoKNN, TanimotoGP
-│   │   └── gbm_models.py              # LightGBM, XGBoost, RandomForest wrappers
+│   │   ├── gbm_models.py              # LightGBM, XGBoost, RandomForest wrappers
+│   │   └── chemprop_model.py          # Chemprop v2 D-MPNN with snapshot ensembling
 │   ├── evaluation/
 │   │   └── validate.py                # RAE metric, bootstrap CI, ScaffoldKFold CV
 │   └── ensemble/
