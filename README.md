@@ -16,6 +16,7 @@ OpenADMET PXR Blind Challenge — Activity Prediction Track
 | 1 | `baseline_submission.py` | kNN + LightGBM | ~0.76 | 0.7999 |
 | 2 | `submission2_gbm_ensemble.py` | kNN + LGBM + XGBoost + RF (inv-RAE ensemble) | 0.6508 | 0.7962 |
 | 3 | `submission3_chemprop.py` | Chemprop D-MPNN + kNN + LGBM + XGBoost + RF (inv-RAE ensemble) | 0.6249 | 0.7511 |
+| 4 | `submission4_foundation_models.py` | + CheMeleon + ChemBERTa foundation embeddings (two GBM tracks) | pending | pending |
 
 ---
 
@@ -28,6 +29,18 @@ Ensemble of Tanimoto k-nearest-neighbor (kNN) and LightGBM regression using:
 - Count-based Morgan fingerprints
 - RDKit physicochemical descriptors (~50)
 - Mordred 2D descriptors (PCA-compressed to 200 dimensions)
+
+### Submission 4 — Foundation model embeddings (CheMeleon + ChemBERTa)
+
+Adds two pretrained molecular embedding models as additional feature blocks:
+- **CheMeleon** (2048-dim): pretrained Chemprop D-MPNN fingerprints, checkpoint downloaded automatically from Zenodo
+- **ChemBERTa** (384-dim): `DeepChem/ChemBERTa-77M-MTR` SMILES-based BERT, mean-pooled token embeddings
+
+Both embedding blocks are PCA-compressed to 200 components and used to train a separate "foundation" GBM track alongside the traditional ECFP4+RDKit GBM track. Embeddings are cached to `data/embed_cache/` — the second run is instant.
+
+Ensemble: Chemprop + kNN + LGBM_traditional + LGBM_foundation + XGB_foundation + RF_foundation (inverse-RAE weights).
+
+Requires Python 3.11 (`chemprop>=2.1.0`, `transformers>=4.x`).
 
 ### Submission 3 — Chemprop D-MPNN + GBM ensemble
 
@@ -87,6 +100,12 @@ cd pxr-challenge-public
 .venv311/bin/python scripts/submission3_chemprop.py
 ```
 
+Submission 4 (foundation model embeddings, requires Python 3.11):
+```bash
+cd pxr-challenge-public
+.venv311/bin/python scripts/submission4_foundation_models.py
+```
+
 All scripts will:
 - Download all four data tiers from HuggingFace (cached to `data/hf_cache/`)
 - Compute fingerprints and descriptors
@@ -103,7 +122,8 @@ pxr-challenge-public/
 ├── scripts/
 │   ├── baseline_submission.py         # Submission 1: kNN + LightGBM
 │   ├── submission2_gbm_ensemble.py    # Submission 2: kNN + LGBM + XGBoost + RF ensemble
-│   └── submission3_chemprop.py        # Submission 3: Chemprop D-MPNN + GBM ensemble
+│   ├── submission3_chemprop.py        # Submission 3: Chemprop D-MPNN + GBM ensemble
+│   └── submission4_foundation_models.py # Submission 4: + CheMeleon + ChemBERTa embeddings
 ├── src/
 │   ├── data/
 │   │   ├── load_data.py               # HuggingFace loading, SMILES canonicalization,
@@ -114,7 +134,8 @@ pxr-challenge-public/
 │   ├── models/
 │   │   ├── local_models.py            # TanimotoKNN, TanimotoGP
 │   │   ├── gbm_models.py              # LightGBM, XGBoost, RandomForest wrappers
-│   │   └── chemprop_model.py          # Chemprop v2 D-MPNN with snapshot ensembling
+│   │   ├── chemprop_model.py          # Chemprop v2 D-MPNN with snapshot ensembling
+│   └── foundation_embeddings.py   # CheMeleon + ChemBERTa pretrained embedders (with disk cache)
 │   ├── evaluation/
 │   │   └── validate.py                # RAE metric, bootstrap CI, ScaffoldKFold CV
 │   └── ensemble/
