@@ -29,6 +29,9 @@ import numpy as np
 
 os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
 os.environ.setdefault("OMP_NUM_THREADS", "1")
+# datasets 4.8+ makes a usage-tracking HEAD request on every load_dataset() call.
+# Setting offline mode skips the network call and reads straight from local cache.
+os.environ.setdefault("HF_HUB_OFFLINE", "1")
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
