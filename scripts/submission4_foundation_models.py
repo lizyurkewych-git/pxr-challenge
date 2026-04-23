@@ -32,6 +32,15 @@ os.environ.setdefault("OMP_NUM_THREADS", "1")
 # datasets 4.8+ makes a usage-tracking HEAD request on every load_dataset() call.
 # Setting offline mode skips the network call and reads straight from local cache.
 os.environ.setdefault("HF_HUB_OFFLINE", "1")
+os.environ.setdefault("HF_DATASETS_OFFLINE", "1")
+
+# datasets 4.8+ added a blocking usage-tracking HEAD request in increase_load_count()
+# that ignores offline env vars and hangs on restrictive networks. Patch it out.
+try:
+    import datasets.load as _datasets_load
+    _datasets_load.increase_load_count = lambda *a, **kw: None
+except Exception:
+    pass
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
