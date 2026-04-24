@@ -16,11 +16,25 @@ OpenADMET PXR Blind Challenge — Activity Prediction Track
 | 1 | `baseline_submission.py` | kNN + LightGBM | ~0.76 | 0.7999 |
 | 2 | `submission2_gbm_ensemble.py` | kNN + LGBM + XGBoost + RF (inv-RAE ensemble) | 0.6508 | 0.7962 |
 | 3 | `submission3_chemprop.py` | Chemprop D-MPNN + kNN + LGBM + XGBoost + RF (inv-RAE ensemble) | 0.6249 | 0.7511 |
-| 4 | `submission4_foundation_models.py` | + CheMeleon + ChemBERTa foundation embeddings (two GBM tracks) | pending | pending |
+| 4 | `submission4_foundation_models.py` | + CheMeleon + ChemBERTa foundation embeddings (two GBM tracks) | 0.6437 | 0.7643 |
+| 5 | `submission5_hts_pretrain.py` | HTS-pretrained Chemprop + scratch Chemprop + kNN + LGBM + RF (ElasticNet stacking) | 0.5609 | pending |
 
 ---
 
 ## Approach
+
+### Submission 5 — HTS pre-training + ElasticNet stacking + Butina CV
+
+Key changes from Sub 4:
+
+- **HTS pre-training**: Chemprop is first pre-trained on ~5,500 PXR HTS compounds (21,003 rows at 4 concentrations → Hill sigmoid fit → pseudo-pEC50), then fine-tuned on the 4,139 primary DRC compounds. This gives the graph network a structural prior on PXR-active chemotypes before seeing precise activity data.
+- **Hill sigmoid fitting** (`src/models/hts_pretrain.py`): fits `R(C) = Rmax × Cⁿ / (EC50ⁿ + Cⁿ)` (n fixed at 1.5) per compound. R² ≥ 0.5 and pEC50 ∈ [3.5, 9.0] are required; inactive and poorly-fit compounds are dropped rather than imputed.
+- **Two Chemprop variants**: scratch (random init) and HTS-pretrained (lower fine-tuning LR = 5×10⁻⁴). Both use 2 seeds in CV, 3 seeds for final training, with predictions averaged.
+- **ElasticNet stacking** (`ElasticNetStacker` in `stack_and_submit.py`): replaces the hand-tuned inverse-RAE weighting. A `StandardScaler + ElasticNetCV` meta-learner is trained on out-of-fold predictions from all five base models. The L1 component automatically zeros out weak contributors.
+- **Butina cluster CV** (`ButinaKFold` in `validate.py`): replaces Murcko scaffold CV. Clusters compounds by ECFP4 Tanimoto similarity (threshold=0.4) using the Butina algorithm, then assigns entire clusters to folds. This gives a more conservative and realistic estimate of generalization to structurally novel analog series.
+- **Foundation embeddings dropped**: CheMeleon and ChemBERTa were tested in Sub 4 and did not improve leaderboard RAE. Removed from Sub 5 to reduce noise.
+
+CV RAE of 0.5609 is the best OOF result to date. The consistent ~0.12 unit CV-to-leaderboard gap across Subs 3–4 suggests an expected leaderboard RAE around 0.68.
 
 ### Submission 1 — kNN + LightGBM baseline
 
@@ -106,10 +120,16 @@ cd pxr-challenge-public
 .venv311/bin/python scripts/submission4_foundation_models.py
 ```
 
+Submission 5 (HTS pre-training + ElasticNet stacking, requires Python 3.11):
+```bash
+cd pxr-challenge-public
+.venv311/bin/python scripts/submission5_hts_pretrain.py
+```
+
 All scripts will:
 - Download all four data tiers from HuggingFace (cached to `data/hf_cache/`)
 - Compute fingerprints and descriptors
-- Run scaffold-stratified 5-fold CV and print RAE per fold
+- Run cross-validation (Butina cluster CV for Sub 5, scaffold CV for Subs 1–4) and print RAE per fold
 - Train on the full training set
 - Save a validated submission CSV to `submissions/`
 
@@ -120,10 +140,11 @@ All scripts will:
 ```
 pxr-challenge-public/
 ├── scripts/
-│   ├── baseline_submission.py         # Submission 1: kNN + LightGBM
-│   ├── submission2_gbm_ensemble.py    # Submission 2: kNN + LGBM + XGBoost + RF ensemble
-│   ├── submission3_chemprop.py        # Submission 3: Chemprop D-MPNN + GBM ensemble
-│   └── submission4_foundation_models.py # Submission 4: + CheMeleon + ChemBERTa embeddings
+│   ├── baseline_submission.py           # Submission 1: kNN + LightGBM
+│   ├── submission2_gbm_ensemble.py      # Submission 2: kNN + LGBM + XGBoost + RF ensemble
+│   ├── submission3_chemprop.py          # Submission 3: Chemprop D-MPNN + GBM ensemble
+│   ├── submission4_foundation_models.py # Submission 4: + CheMeleon + ChemBERTa embeddings
+│   └── submission5_hts_pretrain.py      # Submission 5: HTS pre-training + ElasticNet stacking
 ├── src/
 │   ├── data/
 │   │   ├── load_data.py               # HuggingFace loading, SMILES canonicalization,
@@ -134,12 +155,13 @@ pxr-challenge-public/
 │   ├── models/
 │   │   ├── local_models.py            # TanimotoKNN, TanimotoGP
 │   │   ├── gbm_models.py              # LightGBM, XGBoost, RandomForest wrappers
-│   │   ├── chemprop_model.py          # Chemprop v2 D-MPNN with snapshot ensembling
-│   └── foundation_embeddings.py   # CheMeleon + ChemBERTa pretrained embedders (with disk cache)
+│   │   ├── chemprop_model.py          # Chemprop v2 D-MPNN; transfer learning via init_state_dict
+│   │   ├── hts_pretrain.py            # Hill sigmoid fitting → pseudo-pEC50 for HTS pre-training
+│   │   └── foundation_embeddings.py   # CheMeleon + ChemBERTa pretrained embedders (Sub 4)
 │   ├── evaluation/
-│   │   └── validate.py                # RAE metric, bootstrap CI, ScaffoldKFold CV
+│   │   └── validate.py                # RAE metric, bootstrap CI, ScaffoldKFold, ButinaKFold CV
 │   └── ensemble/
-│       └── stack_and_submit.py        # Weighted ensemble, submission CSV generation
+│       └── stack_and_submit.py        # WeightedEnsemble, ElasticNetStacker, submission pipeline
 ├── data/                              # Downloaded datasets (gitignored)
 ├── submissions/                       # Output submission CSVs (gitignored)
 └── requirements.txt
