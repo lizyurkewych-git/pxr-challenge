@@ -372,6 +372,74 @@ def apply_knn_correction(
     return y_corrected
 
 
+# ---------------------------------------------------------------------------
+# Butina cluster K-Fold splitter
+# ---------------------------------------------------------------------------
+
+class ButinaKFold:
+    """K-Fold CV using Butina clustering (Tanimoto-based) for structurally honest splits.
+
+    Clusters compounds by Tanimoto similarity so that structurally related
+    compounds are held out together. More realistic than Murcko scaffold folds
+    for analog-set test compounds.
+
+    Usage:
+        splitter = ButinaKFold(n_splits=5, tanimoto_threshold=0.4)
+        for fold, (train_idx, val_idx) in enumerate(splitter.split(smiles)):
+            ...
+    """
+
+    def __init__(
+        self,
+        n_splits: int = 5,
+        tanimoto_threshold: float = 0.4,
+        random_state: int = 42,
+    ):
+        self.n_splits = n_splits
+        self.tanimoto_threshold = tanimoto_threshold
+        self.random_state = random_state
+
+    def split(self, smiles: Sequence[str]) -> Iterator[tuple[np.ndarray, np.ndarray]]:
+        from rdkit.Chem import DataStructs
+        from rdkit.Chem.rdFingerprintGenerator import GetMorganGenerator
+        from rdkit.ML.Cluster import Butina
+
+        n = len(smiles)
+        gen = GetMorganGenerator(radius=2, fpSize=2048)
+        fps = [gen.GetFingerprint(Chem.MolFromSmiles(s)) for s in smiles]
+
+        dists = []
+        for i in range(1, n):
+            sims = DataStructs.BulkTanimotoSimilarity(fps[i], fps[:i])
+            dists.extend(1.0 - s for s in sims)
+
+        cutoff = 1.0 - self.tanimoto_threshold
+        clusters = Butina.ClusterData(dists, n, cutoff, isDistData=True)
+
+        cluster_ids = np.zeros(n, dtype=int)
+        for cluster_id, cluster in enumerate(clusters):
+            for idx in cluster:
+                cluster_ids[idx] = cluster_id
+
+        unique_clusters = np.unique(cluster_ids)
+        rng = np.random.default_rng(self.random_state)
+        unique_clusters = rng.permutation(unique_clusters)
+        cluster_to_fold = {int(c): i % self.n_splits for i, c in enumerate(unique_clusters)}
+        fold_ids = np.array([cluster_to_fold[int(c)] for c in cluster_ids])
+
+        logger.info(
+            f"ButinaKFold: {len(unique_clusters)} clusters → {self.n_splits} folds "
+            f"(threshold={self.tanimoto_threshold})"
+        )
+        for fold in range(self.n_splits):
+            val_idx = np.where(fold_ids == fold)[0]
+            train_idx = np.where(fold_ids != fold)[0]
+            yield train_idx, val_idx
+
+    def get_n_splits(self) -> int:
+        return self.n_splits
+
+
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     rng = np.random.default_rng(0)

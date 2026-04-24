@@ -132,6 +132,12 @@ class ChempropModel:
     # fit
     # ------------------------------------------------------------------
 
+    def get_state_dict(self) -> dict:
+        """Return a CPU copy of the MPNN state dict for transfer learning."""
+        if not hasattr(self, "_mpnn"):
+            raise RuntimeError("Model has not been fitted yet.")
+        return {k: v.cpu().clone() for k, v in self._mpnn.state_dict().items()}
+
     def fit(
         self,
         smiles: list[str],
@@ -139,6 +145,7 @@ class ChempropModel:
         sample_weight: Optional[np.ndarray] = None,
         smiles_val: Optional[list[str]] = None,
         y_val: Optional[np.ndarray] = None,
+        init_state_dict: Optional[dict] = None,
     ) -> "ChempropModel":
         import copy
         import torch
@@ -165,6 +172,14 @@ class ChempropModel:
 
         device = torch.device(self.device)
         mpnn = self._build_mpnn(extra_dim=0).to(device)
+
+        if init_state_dict is not None:
+            missing, unexpected = mpnn.load_state_dict(
+                {k: v.to(device) for k, v in init_state_dict.items()}, strict=False
+            )
+            if missing:
+                logger.info(f"Pre-trained state dict: {len(missing)} missing keys (FFN re-initialized).")
+            logger.info("Initialized from pre-trained weights.")
 
         optimizer = torch.optim.Adam(mpnn.parameters(), lr=self.lr)
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(

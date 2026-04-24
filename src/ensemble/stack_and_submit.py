@@ -189,6 +189,87 @@ class CaruanaEnsemble:
 
 
 # ---------------------------------------------------------------------------
+# ElasticNet meta-learner stacker
+# ---------------------------------------------------------------------------
+
+class ElasticNetStacker:
+    """ElasticNet meta-learner trained on out-of-fold predictions.
+
+    Learns optimal linear combination of base model OOF predictions using
+    L1+L2 regularization. L1 component automatically zeroes out weak models.
+    Alpha is selected by inner CV on the OOF set.
+
+    Usage:
+        stacker = ElasticNetStacker()
+        stacker.fit(oof_matrix, train_y, model_names)  # oof_matrix: (n_train, n_models)
+        preds = stacker.predict(test_matrix)            # test_matrix: (n_test, n_models)
+    """
+
+    def __init__(
+        self,
+        l1_ratio: float = 0.7,
+        cv: int = 5,
+        clip_range: tuple[float, float] = (1.5, 8.0),
+    ):
+        self.l1_ratio = l1_ratio
+        self.cv = cv
+        self.clip_range = clip_range
+        self._model = None
+        self._scaler = None
+        self._model_names: list[str] = []
+
+    def fit(
+        self,
+        oof_predictions: np.ndarray,
+        y_train: np.ndarray,
+        model_names: Optional[Sequence[str]] = None,
+    ) -> "ElasticNetStacker":
+        """Fit ElasticNetCV on OOF predictions.
+
+        Parameters
+        ----------
+        oof_predictions : shape (n_train, n_models)
+        y_train         : shape (n_train,)
+        """
+        from sklearn.linear_model import ElasticNetCV
+        from sklearn.preprocessing import StandardScaler
+
+        self._scaler = StandardScaler()
+        X = self._scaler.fit_transform(oof_predictions)
+
+        self._model = ElasticNetCV(
+            l1_ratio=self.l1_ratio,
+            cv=self.cv,
+            max_iter=10000,
+            random_state=42,
+        )
+        self._model.fit(X, y_train)
+
+        self._model_names = (
+            list(model_names) if model_names is not None
+            else [f"model_{i}" for i in range(oof_predictions.shape[1])]
+        )
+
+        logger.info(f"ElasticNetStacker: alpha={self._model.alpha_:.4f}, l1_ratio={self.l1_ratio}")
+        for name, coef in zip(self._model_names, self._model.coef_):
+            logger.info(f"  {name}: coef={coef:.4f}")
+
+        return self
+
+    def predict(self, test_predictions: np.ndarray) -> np.ndarray:
+        if self._model is None:
+            raise RuntimeError("Call fit() before predict().")
+        X = self._scaler.transform(test_predictions)
+        return np.clip(self._model.predict(X), *self.clip_range)
+
+    @property
+    def coefs(self) -> dict[str, float]:
+        if self._model is None:
+            return {}
+        return dict(zip(self._model_names, self._model.coef_))
+
+
+# ---------------------------------------------------------------------------
 # GP uncertainty-gated adaptive ensemble
 # ---------------------------------------------------------------------------
 
