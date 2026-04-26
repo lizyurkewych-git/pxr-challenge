@@ -146,7 +146,16 @@ class ChempropModel:
         smiles_val: Optional[list[str]] = None,
         y_val: Optional[np.ndarray] = None,
         init_state_dict: Optional[dict] = None,
+        x_d: Optional[np.ndarray] = None,
     ) -> "ChempropModel":
+        """Fit the model.
+
+        Parameters
+        ----------
+        x_d : optional molecule-level descriptor matrix, shape (n, d).
+              Appended to the FFN input alongside the GNN embedding.
+              Use for concentration-aware HTS pre-training (d=1, log10[conc]).
+        """
         import copy
         import torch
         import torch.nn as nn
@@ -165,21 +174,36 @@ class ChempropModel:
         )
         targets_arr = y.astype(np.float32)
 
+        x_d_arr: Optional[np.ndarray] = None
+        extra_dim = 0
+        if x_d is not None:
+            x_d_arr = np.asarray(x_d, dtype=np.float32)
+            if x_d_arr.ndim == 1:
+                x_d_arr = x_d_arr[:, None]
+            extra_dim = x_d_arr.shape[1]
+
         # Pre-featurize all molecules once — avoids DataLoader + semaphore issues
         featurizer = SimpleMoleculeMolGraphFeaturizer()
         mols = [Chem.MolFromSmiles(s) for s in smiles]
         mol_graphs = [featurizer(mol) for mol in mols]
 
         device = torch.device(self.device)
-        mpnn = self._build_mpnn(extra_dim=0).to(device)
+        mpnn = self._build_mpnn(extra_dim=extra_dim).to(device)
 
         if init_state_dict is not None:
-            missing, unexpected = mpnn.load_state_dict(
-                {k: v.to(device) for k, v in init_state_dict.items()}, strict=False
+            # Transfer only the GNN encoder (message_passing.*) weights.
+            # The predictor/FFN is deliberately excluded: its input_dim depends on
+            # extra_dim and will mismatch if pretraining used x_d but fine-tuning does not.
+            encoder_state = {
+                k: v.to(device)
+                for k, v in init_state_dict.items()
+                if k.startswith("message_passing.")
+            }
+            missing, unexpected = mpnn.load_state_dict(encoder_state, strict=False)
+            logger.info(
+                f"Transferred {len(encoder_state)} encoder keys from pre-trained weights "
+                f"({len(missing)} keys left at random init — FFN re-initialized)."
             )
-            if missing:
-                logger.info(f"Pre-trained state dict: {len(missing)} missing keys (FFN re-initialized).")
-            logger.info("Initialized from pre-trained weights.")
 
         optimizer = torch.optim.Adam(mpnn.parameters(), lr=self.lr)
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
@@ -205,8 +229,12 @@ class ChempropModel:
                 tgt = torch.tensor(targets_arr[idx], dtype=torch.float32, device=device).unsqueeze(1)
                 wt  = torch.tensor(weights_arr[idx], dtype=torch.float32, device=device).unsqueeze(1)
 
+                x_d_batch = None
+                if x_d_arr is not None:
+                    x_d_batch = torch.tensor(x_d_arr[idx], dtype=torch.float32, device=device)
+
                 optimizer.zero_grad()
-                preds = mpnn(bmg, V_d=None, X_d=None)
+                preds = mpnn(bmg, V_d=None, X_d=x_d_batch)
                 loss = (criterion(preds, tgt) * wt).mean()
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(mpnn.parameters(), 1.0)
@@ -235,7 +263,7 @@ class ChempropModel:
             logger.info(f"Averaged {len(snapshot_states)} snapshots.")
 
         self._mpnn = mpnn
-        self._extra_dim = 0
+        self._extra_dim = extra_dim
         logger.info("Training complete.")
         return self
 

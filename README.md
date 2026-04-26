@@ -13,28 +13,81 @@ OpenADMET PXR Blind Challenge — Activity Prediction Track
 
 | # | Script | Models | CV RAE | Leaderboard RAE |
 |---|--------|--------|--------|-----------------|
-| 1 | `baseline_submission.py` | kNN + LightGBM | ~0.76 | 0.7999 |
-| 2 | `submission2_gbm_ensemble.py` | kNN + LGBM + XGBoost + RF (inv-RAE ensemble) | 0.6508 | 0.7962 |
-| 3 | `submission3_chemprop.py` | Chemprop D-MPNN + kNN + LGBM + XGBoost + RF (inv-RAE ensemble) | 0.6249 | 0.7511 |
+| 6 | `submission6_delta.py` | Delta + HTS-pretrained Chemprop + kNN + LGBM + RF (ElasticNet) | 0.5481 | pending |
+| 5 | `submission5_hts_pretrain.py` | HTS-pretrained Chemprop + scratch Chemprop + kNN + LGBM + RF (ElasticNet) | 0.5609 | 0.6615 |
 | 4 | `submission4_foundation_models.py` | + CheMeleon + ChemBERTa foundation embeddings (two GBM tracks) | 0.6437 | 0.7643 |
-| 5 | `submission5_hts_pretrain.py` | HTS-pretrained Chemprop + scratch Chemprop + kNN + LGBM + RF (ElasticNet stacking) | 0.5609 | 0.6615 |
+| 3 | `submission3_chemprop.py` | Chemprop D-MPNN + kNN + LGBM + XGBoost + RF (inv-RAE ensemble) | 0.6249 | 0.7511 |
+| 2 | `submission2_gbm_ensemble.py` | kNN + LGBM + XGBoost + RF (inv-RAE ensemble) | 0.6508 | 0.7962 |
+| 1 | `baseline_submission.py` | kNN + LightGBM | ~0.76 | 0.7999 |
 
 ---
 
 ## Approach
 
+### Submission 6 — Pairwise delta learning + concentration-aware HTS pre-training
+
+Key changes from Sub 5:
+
+- **Pairwise delta learning** (`src/models/delta_model.py`): a Chemprop D-MPNN is trained on all pairwise activity differences — input is (SMILES_i, SMILES_j), target is pEC50_i − pEC50_j. At inference, each test compound is anchored to its 10 nearest training neighbors: `pred(t) = mean(y_n + Δ(t, n))`. This directly optimizes for relative activity within scaffold families, which is exactly what the analog-series test set requires. Activity cliff pairs (Tanimoto ≥ 0.7, |Δ pEC50| ≥ 1.0) are oversampled 3× per epoch. Antisymmetry averaging at inference: `Δ(t,n) = 0.5 × (forward − reverse)`.
+- **Concentration-aware HTS pre-training** (`prepare_hts_concentration_data` in `hts_pretrain.py`): instead of Hill-fitting 4 concentrations into a single pseudo-pEC50, all 4 dose-response points per compound are kept as separate training rows, with `log10[concentration_M]` passed as a molecule-level descriptor (`x_d`) to the Chemprop FFN. This gives ~21K training rows (4× more than Hill-fitting) with no R² acceptance filter that previously discarded borderline-active compounds.
+- **Encoder-only transfer**: only `message_passing.*` weights are transferred from HTS pretraining to fine-tuning. The FFN is always re-initialized, preventing size mismatches when the pre-training uses `x_d` but fine-tuning does not.
+- **ElasticNet result**: `chemprop_scratch` was assigned a zero coefficient and effectively dropped. The strongest contributors were `chemprop_hts` (0.38), `rf` (0.29), `delta` (0.20), `knn` (0.06), `lgbm` (0.01).
+
+ElasticNet OOF RAE of 0.5481 is the best result to date (improved from 0.5609 in Sub 5).
+
+---
+
 ### Submission 5 — HTS pre-training + ElasticNet stacking + Butina CV
 
 Key changes from Sub 4:
 
-- **HTS pre-training**: Chemprop is first pre-trained on ~5,500 PXR HTS compounds (21,003 rows at 4 concentrations → Hill sigmoid fit → pseudo-pEC50), then fine-tuned on the 4,139 primary DRC compounds. This gives the graph network a structural prior on PXR-active chemotypes before seeing precise activity data.
-- **Hill sigmoid fitting** (`src/models/hts_pretrain.py`): fits `R(C) = Rmax × Cⁿ / (EC50ⁿ + Cⁿ)` (n fixed at 1.5) per compound. R² ≥ 0.5 and pEC50 ∈ [3.5, 9.0] are required; inactive and poorly-fit compounds are dropped rather than imputed.
+- **HTS pre-training**: Chemprop is first pre-trained on ~5,500 PXR HTS compounds (21,003 rows at 4 concentrations → Hill sigmoid fit → pseudo-pEC50), then fine-tuned on the 4,139 primary DRC compounds.
+- **Hill sigmoid fitting** (`src/models/hts_pretrain.py`): fits `R(C) = Rmax × Cⁿ / (EC50ⁿ + Cⁿ)` (n fixed at 1.5) per compound. R² ≥ 0.5 and pEC50 ∈ [3.5, 9.0] required; inactive and poorly-fit compounds are dropped.
 - **Two Chemprop variants**: scratch (random init) and HTS-pretrained (lower fine-tuning LR = 5×10⁻⁴). Both use 2 seeds in CV, 3 seeds for final training, with predictions averaged.
-- **ElasticNet stacking** (`ElasticNetStacker` in `stack_and_submit.py`): replaces the hand-tuned inverse-RAE weighting. A `StandardScaler + ElasticNetCV` meta-learner is trained on out-of-fold predictions from all five base models. The L1 component automatically zeros out weak contributors.
-- **Butina cluster CV** (`ButinaKFold` in `validate.py`): replaces Murcko scaffold CV. Clusters compounds by ECFP4 Tanimoto similarity (threshold=0.4) using the Butina algorithm, then assigns entire clusters to folds. This gives a more conservative and realistic estimate of generalization to structurally novel analog series.
-- **Foundation embeddings dropped**: CheMeleon and ChemBERTa were tested in Sub 4 and did not improve leaderboard RAE. Removed from Sub 5 to reduce noise.
+- **ElasticNet stacking** (`ElasticNetStacker` in `stack_and_submit.py`): replaces hand-tuned inverse-RAE weighting. A `StandardScaler + ElasticNetCV` meta-learner is trained on out-of-fold predictions from all five base models.
+- **Butina cluster CV** (`ButinaKFold` in `validate.py`): replaces Murcko scaffold CV. Clusters by ECFP4 Tanimoto similarity (threshold=0.4) using the Butina algorithm; entire clusters are held out per fold.
+- **Foundation embeddings dropped**: CheMeleon and ChemBERTa (Sub 4) did not improve leaderboard RAE.
 
-CV RAE of 0.5609 is the best OOF result to date. The consistent ~0.12 unit CV-to-leaderboard gap across Subs 3–4 suggests an expected leaderboard RAE around 0.68.
+Largest single-submission leaderboard improvement to date: 0.7643 → 0.6615 (rank 109 → 64).
+
+---
+
+### Submission 4 — Foundation model embeddings (CheMeleon + ChemBERTa)
+
+Adds two pretrained molecular embedding models as additional feature blocks:
+- **CheMeleon** (2048-dim): pretrained Chemprop D-MPNN fingerprints, checkpoint downloaded from Zenodo
+- **ChemBERTa** (384-dim): `DeepChem/ChemBERTa-77M-MTR` SMILES-based BERT, mean-pooled token embeddings
+
+Both blocks are PCA-compressed to 200 components and used to train a separate "foundation" GBM track alongside the traditional ECFP4+RDKit track. Embeddings are cached to `data/embed_cache/`.
+
+Ensemble: Chemprop + kNN + LGBM_traditional + LGBM_foundation + XGB_foundation + RF_foundation (inverse-RAE weights).
+
+Result: foundation embeddings added noise rather than signal (leaderboard RAE increased vs Sub 3). Dropped in Sub 5.
+
+---
+
+### Submission 3 — Chemprop D-MPNN + GBM ensemble
+
+Adds a Chemprop v2 message-passing neural network (D-MPNN) trained directly on molecular graphs:
+- Chemprop D-MPNN (hidden_size=300, depth=3, 100 epochs) with snapshot ensembling (last 5 epoch checkpoints averaged)
+- Same kNN + LightGBM + XGBoost + RF models from Submission 2
+- All five models combined via inverse-RAE weights
+
+Requires Python 3.11 (`chemprop>=2.1.0`).
+
+---
+
+### Submission 2 — 4-model inverse-RAE weighted ensemble
+
+Adds XGBoost and Random Forest to the ensemble, with weights proportional to inverse CV RAE. New features:
+- ECFP6 fingerprints (radius=3) added to the feature matrix
+- Activity cliff reweighting: compounds in cliff pairs (Tanimoto ≥ 0.7, |ΔpEC50| ≥ 1.0) get 2× training weight
+- Non-specific compound downweighting: counter-assay flagged compounds get 0.3× weight
+- Inverse-variance weights from experimental SE
+
+Uses scaffold-stratified 5-fold CV (Murcko scaffolds).
+
+---
 
 ### Submission 1 — kNN + LightGBM baseline
 
@@ -43,39 +96,6 @@ Ensemble of Tanimoto k-nearest-neighbor (kNN) and LightGBM regression using:
 - Count-based Morgan fingerprints
 - RDKit physicochemical descriptors (~50)
 - Mordred 2D descriptors (PCA-compressed to 200 dimensions)
-
-### Submission 4 — Foundation model embeddings (CheMeleon + ChemBERTa)
-
-Adds two pretrained molecular embedding models as additional feature blocks:
-- **CheMeleon** (2048-dim): pretrained Chemprop D-MPNN fingerprints, checkpoint downloaded automatically from Zenodo
-- **ChemBERTa** (384-dim): `DeepChem/ChemBERTa-77M-MTR` SMILES-based BERT, mean-pooled token embeddings
-
-Both embedding blocks are PCA-compressed to 200 components and used to train a separate "foundation" GBM track alongside the traditional ECFP4+RDKit GBM track. Embeddings are cached to `data/embed_cache/` — the second run is instant.
-
-Ensemble: Chemprop + kNN + LGBM_traditional + LGBM_foundation + XGB_foundation + RF_foundation (inverse-RAE weights).
-
-Requires Python 3.11 (`chemprop>=2.1.0`, `transformers>=4.x`).
-
-### Submission 3 — Chemprop D-MPNN + GBM ensemble
-
-Adds a Chemprop v2 message-passing neural network (D-MPNN) trained directly on molecular graphs:
-- Chemprop D-MPNN (hidden_size=300, depth=3, 100 epochs) with snapshot ensembling (last 5 epoch checkpoints averaged)
-- MPS (Apple Silicon) acceleration
-- Same kNN + LightGBM + XGBoost + RF models from Submission 2
-- All five models combined via inverse-RAE weights
-- Chemprop must be trained *before* Mordred multiprocessing to avoid a semaphore crash on macOS Python 3.11
-
-Requires Python 3.11 (`chemprop>=2.1.0`).
-
-### Submission 2 — 4-model inverse-RAE weighted ensemble
-
-Adds XGBoost and Random Forest to the ensemble, with weights proportional to inverse CV RAE (stronger models get more vote). New features:
-- ECFP6 fingerprints (radius=3) added to feature matrix
-- Activity cliff sample reweighting: compounds in cliff pairs (Tanimoto ≥ 0.7, |ΔpEC50| ≥ 1.0) get 2× training weight
-- Non-specific compound downweighting: compounds flagged by counter-assay get 0.3× weight
-- Inverse-variance weights from experimental SE (measurement quality)
-
-Model selection uses scaffold-stratified 5-fold cross-validation (Murcko scaffolds), which better reflects the analog-series structure of the test set than random splits.
 
 ---
 
@@ -96,40 +116,40 @@ export HF_TOKEN=your_token_here
 
 ### 3. Generate a submission
 
-Submission 1 baseline:
+Submission 6 (pairwise delta learning + concentration-aware HTS pre-training, requires Python 3.11):
 ```bash
-cd pxr-challenge-public
-python scripts/baseline_submission.py
-```
-
-Submission 2 ensemble:
-```bash
-cd pxr-challenge-public
-python scripts/submission2_gbm_ensemble.py
-```
-
-Submission 3 (Chemprop + GBM ensemble, requires Python 3.11):
-```bash
-cd pxr-challenge-public
-.venv311/bin/python scripts/submission3_chemprop.py
-```
-
-Submission 4 (foundation model embeddings, requires Python 3.11):
-```bash
-cd pxr-challenge-public
-.venv311/bin/python scripts/submission4_foundation_models.py
+.venv311/bin/python scripts/submission6_delta.py
 ```
 
 Submission 5 (HTS pre-training + ElasticNet stacking, requires Python 3.11):
 ```bash
-cd pxr-challenge-public
 .venv311/bin/python scripts/submission5_hts_pretrain.py
+```
+
+Submission 4 (foundation model embeddings, requires Python 3.11):
+```bash
+.venv311/bin/python scripts/submission4_foundation_models.py
+```
+
+Submission 3 (Chemprop + GBM ensemble, requires Python 3.11):
+```bash
+.venv311/bin/python scripts/submission3_chemprop.py
+```
+
+Submission 2 ensemble:
+```bash
+python scripts/submission2_gbm_ensemble.py
+```
+
+Submission 1 baseline:
+```bash
+python scripts/baseline_submission.py
 ```
 
 All scripts will:
 - Download all four data tiers from HuggingFace (cached to `data/hf_cache/`)
 - Compute fingerprints and descriptors
-- Run cross-validation (Butina cluster CV for Sub 5, scaffold CV for Subs 1–4) and print RAE per fold
+- Run cross-validation (Butina cluster CV for Subs 5–6, scaffold CV for Subs 1–4) and print RAE per fold
 - Train on the full training set
 - Save a validated submission CSV to `submissions/`
 
@@ -140,11 +160,12 @@ All scripts will:
 ```
 pxr-challenge-public/
 ├── scripts/
-│   ├── baseline_submission.py           # Submission 1: kNN + LightGBM
-│   ├── submission2_gbm_ensemble.py      # Submission 2: kNN + LGBM + XGBoost + RF ensemble
-│   ├── submission3_chemprop.py          # Submission 3: Chemprop D-MPNN + GBM ensemble
+│   ├── submission6_delta.py             # Submission 6: delta learning + conc-aware HTS pretrain
+│   ├── submission5_hts_pretrain.py      # Submission 5: HTS pre-training + ElasticNet stacking
 │   ├── submission4_foundation_models.py # Submission 4: + CheMeleon + ChemBERTa embeddings
-│   └── submission5_hts_pretrain.py      # Submission 5: HTS pre-training + ElasticNet stacking
+│   ├── submission3_chemprop.py          # Submission 3: Chemprop D-MPNN + GBM ensemble
+│   ├── submission2_gbm_ensemble.py      # Submission 2: kNN + LGBM + XGBoost + RF ensemble
+│   └── baseline_submission.py           # Submission 1: kNN + LightGBM
 ├── src/
 │   ├── data/
 │   │   ├── load_data.py               # HuggingFace loading, SMILES canonicalization,
@@ -153,13 +174,14 @@ pxr-challenge-public/
 │   ├── features/
 │   │   └── feature_engineering.py     # ECFP4/6, FCFP4, RDKit, Mordred, Tanimoto utils
 │   ├── models/
+│   │   ├── delta_model.py             # Pairwise Δ pEC50 Chemprop; kNN-anchored inference
+│   │   ├── chemprop_model.py          # Chemprop v2 D-MPNN; x_d support; encoder-only transfer
+│   │   ├── hts_pretrain.py            # Hill fitting + concentration-aware HTS data prep
 │   │   ├── local_models.py            # TanimotoKNN, TanimotoGP
 │   │   ├── gbm_models.py              # LightGBM, XGBoost, RandomForest wrappers
-│   │   ├── chemprop_model.py          # Chemprop v2 D-MPNN; transfer learning via init_state_dict
-│   │   ├── hts_pretrain.py            # Hill sigmoid fitting → pseudo-pEC50 for HTS pre-training
 │   │   └── foundation_embeddings.py   # CheMeleon + ChemBERTa pretrained embedders (Sub 4)
 │   ├── evaluation/
-│   │   └── validate.py                # RAE metric, bootstrap CI, ScaffoldKFold, ButinaKFold CV
+│   │   └── validate.py                # RAE metric, bootstrap CI, ScaffoldKFold, ButinaKFold
 │   └── ensemble/
 │       └── stack_and_submit.py        # WeightedEnsemble, ElasticNetStacker, submission pipeline
 ├── data/                              # Downloaded datasets (gitignored)
@@ -177,7 +199,7 @@ All data loaded automatically from `openadmet/pxr-challenge-train-test` on Huggi
 |------|---|-------------|-------|
 | Primary DRC | 4,139 | pEC50 (1.61–7.55), Emax, SE | Primary training target |
 | Counter-assay | 2,859 | pEC50_null | Non-specific compound detection |
-| HTS screen | 21,003 | neg_log10_fdr, concentration_M | Auxiliary signal |
+| HTS screen | 21,003 | neg_log10_fdr, concentration_M | HTS pre-training signal |
 | Test | 513 | SMILES, Molecule Name | Submission target |
 
 ## Submission Format

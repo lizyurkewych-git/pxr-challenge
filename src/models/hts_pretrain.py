@@ -164,3 +164,87 @@ def prepare_hts_pretrain_data(
         f"mean: {df['pseudo_pec50'].mean():.2f}"
     )
     return df
+
+
+def prepare_hts_concentration_data(
+    hts_df: pd.DataFrame,
+    primary_train: Optional[pd.DataFrame] = None,
+    response_scale: str = "auto",
+) -> tuple[list[str], np.ndarray, np.ndarray]:
+    """Use all 4 HTS concentration points as pre-training data.
+
+    Instead of Hill-fitting 4 concentrations into a single pseudo-pEC50, this
+    keeps every (SMILES, concentration) row. log10(concentration_M) is returned
+    as the x_d feature fed to the Chemprop FFN, letting the model learn the
+    dose-response shape directly from 4× more training signal.
+
+    Rows where the response or concentration is missing/non-finite are dropped.
+    If primary_train is provided, HTS rows whose SMILES appear there are replaced
+    with (smiles, log10(EC50_ref_conc), true_pEC50) pairs so the primary DRC
+    compounds participate with their exact labels.
+
+    Parameters
+    ----------
+    hts_df         : HTS screen DataFrame (one row per compound × concentration)
+    primary_train  : primary DRC training set (optional; must have pEC50 column)
+    response_scale : 'auto' uses log2_fc_estimate if present, else neg_log10_fdr.
+                     Responses are min-max scaled to [0, 1] before use as targets.
+
+    Returns
+    -------
+    smiles_list : list[str]  — one SMILES per training row
+    y           : np.ndarray shape (n,) — response target (scaled or pEC50)
+    x_d         : np.ndarray shape (n, 1) — log10(concentration_M)
+    """
+    if COL_CONC not in hts_df.columns:
+        raise ValueError(f"'{COL_CONC}' not found. Available: {list(hts_df.columns)}")
+
+    response_col = (
+        COL_LOG2FC if (response_scale == "auto" and COL_LOG2FC in hts_df.columns)
+        else COL_NEG_LOG_FDR
+    )
+    logger.info(f"Concentration-aware HTS pretraining: response column = {response_col}")
+
+    df = hts_df[[COL_SMILES, COL_CONC, response_col]].copy()
+    df = df.dropna(subset=[COL_SMILES, COL_CONC, response_col])
+    df = df[np.isfinite(df[COL_CONC].values) & (df[COL_CONC].values > 0)]
+
+    # Cap inf from fdr_bh=0 (neg_log10_fdr = inf)
+    resp = df[response_col].values.astype(np.float64)
+    finite_max = np.nanmax(resp[np.isfinite(resp)]) if np.any(np.isfinite(resp)) else 1.0
+    resp = np.where(np.isposinf(resp), finite_max + 1.0, resp)
+    resp = np.where(np.isneginf(resp), 0.0, resp)
+    resp = np.clip(resp, 0.0, None)
+
+    # Min-max scale response to [0, 1] so it's on the same scale as pEC50 replacements below
+    r_min, r_max = resp.min(), resp.max()
+    if r_max > r_min:
+        resp_scaled = (resp - r_min) / (r_max - r_min)
+    else:
+        resp_scaled = resp
+
+    df[response_col] = resp_scaled
+    log_conc = np.log10(df[COL_CONC].values.astype(np.float64))
+
+    smiles_list = df[COL_SMILES].tolist()
+    y = df[response_col].values.astype(np.float32)
+    x_d = log_conc.astype(np.float32)[:, None]
+
+    # Replace HTS rows with true pEC50 for primary-train compounds
+    # Use log10(10 µM) = -5 as a representative reference concentration
+    if primary_train is not None and "pEC50" in primary_train.columns:
+        drc_map = primary_train.set_index(COL_SMILES)["pEC50"].to_dict()
+        n_replaced = 0
+        for idx, smi in enumerate(smiles_list):
+            if smi in drc_map:
+                y[idx] = float(drc_map[smi])
+                x_d[idx, 0] = -5.0  # reference concentration for pEC50
+                n_replaced += 1
+        logger.info(f"Replaced {n_replaced} HTS rows with true DRC pEC50 values.")
+
+    logger.info(
+        f"Concentration-aware pre-training dataset: {len(smiles_list)} rows | "
+        f"{len(set(smiles_list))} unique compounds | "
+        f"log10[conc] range: [{x_d.min():.1f}, {x_d.max():.1f}]"
+    )
+    return smiles_list, y, x_d
