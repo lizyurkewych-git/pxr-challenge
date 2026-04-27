@@ -13,6 +13,7 @@ OpenADMET PXR Blind Challenge — Activity Prediction Track
 
 | # | Script | Models | CV RAE | Leaderboard RAE |
 |---|--------|--------|--------|-----------------|
+| 7 | `submission7_tabpfn.py` | TabPFN+CheMeleon + Delta + HTS-pretrained Chemprop + kNN + RF (ElasticNet) | 0.5297 | pending |
 | 6 | `submission6_delta.py` | Delta + HTS-pretrained Chemprop + kNN + LGBM + RF (ElasticNet) | 0.5481 | 0.6583 |
 | 5 | `submission5_hts_pretrain.py` | HTS-pretrained Chemprop + scratch Chemprop + kNN + LGBM + RF (ElasticNet) | 0.5609 | 0.6615 |
 | 4 | `submission4_foundation_models.py` | + CheMeleon + ChemBERTa foundation embeddings (two GBM tracks) | 0.6437 | 0.7643 |
@@ -23,6 +24,18 @@ OpenADMET PXR Blind Challenge — Activity Prediction Track
 ---
 
 ## Approach
+
+### Submission 7 — TabPFN + CheMeleon in-context learning
+
+Key changes from Sub 6:
+
+- **TabPFN + CheMeleon** (`src/models/tabpfn_model.py`): a TabPFN v2 regressor backed by frozen 2048-dim CheMeleon embeddings compressed via PCA(200). TabPFN performs *in-context learning* — there is no gradient training step. At prediction time, the full `(X_train, y_train)` is passed through a transformer pretrained on millions of synthetic tabular datasets, which adaptively weights each training compound's contribution to each test prediction. This is fundamentally different from Sub 4's CheMeleon + LGBM approach: LGBM fits a fixed decision tree and forgets the training labels at test time; TabPFN sees all 4,139 training labels during every prediction. Motivated by Ben Hicham et al. (2025), which showed TabPFN + CheMeleon achieves up to 100% win rate on the MoleculeACE activity cliff benchmark — structurally identical to our analog-series test set.
+- **Installation note**: `tabpfn==2.2.1` must be installed with `--no-deps` to avoid a `huggingface-hub` version conflict with `transformers` (TabPFN 2.x pins `huggingface-hub<1` but transformers requires `>=1.5.0`; the `--no-deps` flag keeps the existing compatible version).
+- **ElasticNet result**: `tabpfn` was the dominant contributor (coef=0.42), surpassing `chemprop_hts` (0.33). `chemprop_scratch` received a small negative coefficient (−0.12), acting as a bias corrector. `lgbm` was zeroed out.
+
+ElasticNet OOF RAE of **0.5297** is the best result to date (improved from 0.5481 in Sub 6).
+
+---
 
 ### Submission 6 — Pairwise delta learning + concentration-aware HTS pre-training
 
@@ -116,6 +129,12 @@ export HF_TOKEN=your_token_here
 
 ### 3. Generate a submission
 
+Submission 7 (TabPFN + CheMeleon + full Sub 6 stack, requires Python 3.11):
+```bash
+pip install "tabpfn==2.2.1" --no-deps
+.venv311/bin/python scripts/submission7_tabpfn.py
+```
+
 Submission 6 (pairwise delta learning + concentration-aware HTS pre-training, requires Python 3.11):
 ```bash
 .venv311/bin/python scripts/submission6_delta.py
@@ -149,7 +168,7 @@ python scripts/baseline_submission.py
 All scripts will:
 - Download all four data tiers from HuggingFace (cached to `data/hf_cache/`)
 - Compute fingerprints and descriptors
-- Run cross-validation (Butina cluster CV for Subs 5–6, scaffold CV for Subs 1–4) and print RAE per fold
+- Run cross-validation (Butina cluster CV for Subs 5–7, scaffold CV for Subs 1–4) and print RAE per fold
 - Train on the full training set
 - Save a validated submission CSV to `submissions/`
 
@@ -160,6 +179,7 @@ All scripts will:
 ```
 pxr-challenge-public/
 ├── scripts/
+│   ├── submission7_tabpfn.py            # Submission 7: TabPFN+CheMeleon in-context learning
 │   ├── submission6_delta.py             # Submission 6: delta learning + conc-aware HTS pretrain
 │   ├── submission5_hts_pretrain.py      # Submission 5: HTS pre-training + ElasticNet stacking
 │   ├── submission4_foundation_models.py # Submission 4: + CheMeleon + ChemBERTa embeddings
@@ -174,6 +194,7 @@ pxr-challenge-public/
 │   ├── features/
 │   │   └── feature_engineering.py     # ECFP4/6, FCFP4, RDKit, Mordred, Tanimoto utils
 │   ├── models/
+│   │   ├── tabpfn_model.py            # TabPFN v2 + CheMeleon PCA; in-context learning (Sub 7)
 │   │   ├── delta_model.py             # Pairwise Δ pEC50 Chemprop; kNN-anchored inference
 │   │   ├── chemprop_model.py          # Chemprop v2 D-MPNN; x_d support; encoder-only transfer
 │   │   ├── hts_pretrain.py            # Hill fitting + concentration-aware HTS data prep
