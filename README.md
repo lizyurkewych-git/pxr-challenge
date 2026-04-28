@@ -13,6 +13,7 @@ OpenADMET PXR Blind Challenge — Activity Prediction Track
 
 | # | Script | Models | CV RAE | Leaderboard RAE |
 |---|--------|--------|--------|-----------------|
+| 8 | `submission8_emax.py` | TabPFN+CheMeleon + Delta + HTS-pretrained Chemprop (Emax multi-task) + RF (MACCS) (ElasticNet) | 0.5286 | pending |
 | 7 | `submission7_tabpfn.py` | TabPFN+CheMeleon + Delta + HTS-pretrained Chemprop + kNN + RF (ElasticNet) | 0.5297 | 0.6358 |
 | 6 | `submission6_delta.py` | Delta + HTS-pretrained Chemprop + kNN + LGBM + RF (ElasticNet) | 0.5481 | 0.6583 |
 | 5 | `submission5_hts_pretrain.py` | HTS-pretrained Chemprop + scratch Chemprop + kNN + LGBM + RF (ElasticNet) | 0.5609 | 0.6615 |
@@ -24,6 +25,19 @@ OpenADMET PXR Blind Challenge — Activity Prediction Track
 ---
 
 ## Approach
+
+### Submission 8 — Emax multi-task Chemprop + MACCS fingerprints
+
+Key changes from Sub 7:
+
+- **Emax multi-task Chemprop** (`ChempropModel(n_tasks=2)`): The HTS-pretrained Chemprop fine-tuning step now predicts `[pEC50, Emax]` jointly. Emax (maximum efficacy vs. positive control, ~0–1 dimensionless) is available for all 4,139 training compounds and is fit from the same dose-response curve as pEC50. The two targets are mechanistically coupled — partial agonists (low Emax, structurally distinct from full agonists) carry complementary SAR information that shares the same molecular encoder. Multi-task training exploits this shared structure as an auxiliary signal, improving label efficiency for the primary pEC50 head. HTS pre-training remains single-task; the encoder-only transfer is unaffected (FFN is always re-initialized for the fine-tuning task count). At inference, only column 0 (pEC50 head) is returned.
+- **MACCS 167-bit structural keys for RF** (`FeaturePipeline(include_maccs=True)`): Added to the RF feature matrix alongside ECFP4/6 and RDKit descriptors. De la Vega (2026) SAR analysis of this dataset found ECFP4 and MACCS identify ~90% non-overlapping activity cliff pairs — MACCS gives RF access to cliff information structurally invisible to circular fingerprints.
+- **kNN and LGBM dropped**: Sub 7 ElasticNet assigned coef=0.04 and 0.00 respectively after L1 regularization. Removing them reduces compute and lets the stacker redistribute weight to better models.
+- **ElasticNet result**: `tabpfn` remained dominant (coef=0.423), followed by `chemprop_hts` (0.321), `delta` (0.167), `rf` (0.153), `chemprop_scratch` (−0.120). RF weight increased from 0.127 → 0.153, confirming MACCS added orthogonal signal.
+
+ElasticNet OOF RAE of **0.5286** (improved from 0.5297 in Sub 7).
+
+---
 
 ### Submission 7 — TabPFN + CheMeleon in-context learning
 
@@ -129,6 +143,12 @@ export HF_TOKEN=your_token_here
 
 ### 3. Generate a submission
 
+Submission 8 (Emax multi-task + MACCS, requires Python 3.11):
+```bash
+pip install "tabpfn==2.2.1" --no-deps
+.venv311/bin/python scripts/submission8_emax.py
+```
+
 Submission 7 (TabPFN + CheMeleon + full Sub 6 stack, requires Python 3.11):
 ```bash
 pip install "tabpfn==2.2.1" --no-deps
@@ -168,7 +188,7 @@ python scripts/baseline_submission.py
 All scripts will:
 - Download all four data tiers from HuggingFace (cached to `data/hf_cache/`)
 - Compute fingerprints and descriptors
-- Run cross-validation (Butina cluster CV for Subs 5–7, scaffold CV for Subs 1–4) and print RAE per fold
+- Run cross-validation (Butina cluster CV for Subs 5–8, scaffold CV for Subs 1–4) and print RAE per fold
 - Train on the full training set
 - Save a validated submission CSV to `submissions/`
 
@@ -179,6 +199,7 @@ All scripts will:
 ```
 pxr-challenge-public/
 ├── scripts/
+│   ├── submission8_emax.py              # Submission 8: Emax multi-task Chemprop + MACCS RF
 │   ├── submission7_tabpfn.py            # Submission 7: TabPFN+CheMeleon in-context learning
 │   ├── submission6_delta.py             # Submission 6: delta learning + conc-aware HTS pretrain
 │   ├── submission5_hts_pretrain.py      # Submission 5: HTS pre-training + ElasticNet stacking
@@ -192,11 +213,11 @@ pxr-challenge-public/
 │   │   │                                inverse-variance weights, counter-assay flagging
 │   │   └── cliff_analysis.py          # Activity cliff detection and annotation
 │   ├── features/
-│   │   └── feature_engineering.py     # ECFP4/6, FCFP4, RDKit, Mordred, Tanimoto utils
+│   │   └── feature_engineering.py     # ECFP4/6, FCFP4, MACCS, RDKit, Mordred, Tanimoto utils
 │   ├── models/
 │   │   ├── tabpfn_model.py            # TabPFN v2 + CheMeleon PCA; in-context learning (Sub 7)
 │   │   ├── delta_model.py             # Pairwise Δ pEC50 Chemprop; kNN-anchored inference
-│   │   ├── chemprop_model.py          # Chemprop v2 D-MPNN; x_d support; encoder-only transfer
+│   │   ├── chemprop_model.py          # Chemprop v2 D-MPNN; x_d support; n_tasks multi-task; encoder-only transfer
 │   │   ├── hts_pretrain.py            # Hill fitting + concentration-aware HTS data prep
 │   │   ├── local_models.py            # TanimotoKNN, TanimotoGP
 │   │   ├── gbm_models.py              # LightGBM, XGBoost, RandomForest wrappers

@@ -59,6 +59,7 @@ class ChempropModel:
         snapshot_epochs: int = 5,
         extra_features: bool = True,
         seed: int = 42,
+        n_tasks: int = 1,
     ):
         self.epochs = epochs
         self.hidden_size = hidden_size
@@ -71,6 +72,7 @@ class ChempropModel:
         self.snapshot_epochs = snapshot_epochs
         self.extra_features = extra_features
         self.seed = seed
+        self.n_tasks = n_tasks
 
         self._snapshot_preds: list[np.ndarray] = []
         self._train_smiles: list[str] = []
@@ -100,7 +102,7 @@ class ChempropModel:
     # Build model
     # ------------------------------------------------------------------
 
-    def _build_mpnn(self, extra_dim: int = 0):
+    def _build_mpnn(self, extra_dim: int = 0, n_tasks: int = 1):
         import torch.nn as nn
         from chemprop.models import MPNN
         from chemprop.nn import BondMessagePassing, MeanAggregation, RegressionFFN
@@ -114,6 +116,7 @@ class ChempropModel:
             input_dim=ffn_input_dim,
             n_layers=self.ffn_num_layers,
             dropout=self.dropout,
+            n_tasks=n_tasks,
         )
 
         # X_d_transform must be a callable module when extra features are used;
@@ -165,6 +168,13 @@ class ChempropModel:
 
         torch.manual_seed(self.seed)
         y = np.array(y, dtype=np.float64)
+        # Support both 1-D (single-task) and 2-D (multi-task) target arrays.
+        # For multi-task, column 0 is always the primary target (pEC50).
+        if y.ndim == 1:
+            y = y[:, None]
+        assert y.shape[1] == self.n_tasks, (
+            f"y has {y.shape[1]} columns but n_tasks={self.n_tasks}"
+        )
         n = len(smiles)
 
         weights_arr = (
@@ -188,7 +198,7 @@ class ChempropModel:
         mol_graphs = [featurizer(mol) for mol in mols]
 
         device = torch.device(self.device)
-        mpnn = self._build_mpnn(extra_dim=extra_dim).to(device)
+        mpnn = self._build_mpnn(extra_dim=extra_dim, n_tasks=self.n_tasks).to(device)
 
         if init_state_dict is not None:
             # Transfer only the GNN encoder (message_passing.*) weights.
@@ -226,8 +236,8 @@ class ChempropModel:
                 bmg = BatchMolGraph(mgs)
                 bmg.to(device)
 
-                tgt = torch.tensor(targets_arr[idx], dtype=torch.float32, device=device).unsqueeze(1)
-                wt  = torch.tensor(weights_arr[idx], dtype=torch.float32, device=device).unsqueeze(1)
+                tgt = torch.tensor(targets_arr[idx], dtype=torch.float32, device=device)
+                wt  = torch.tensor(weights_arr[idx], dtype=torch.float32, device=device)
 
                 x_d_batch = None
                 if x_d_arr is not None:
@@ -235,7 +245,8 @@ class ChempropModel:
 
                 optimizer.zero_grad()
                 preds = mpnn(bmg, V_d=None, X_d=x_d_batch)
-                loss = (criterion(preds, tgt) * wt).mean()
+                # Mean over tasks per sample, then weighted average over samples
+                loss = (criterion(preds, tgt).mean(dim=1) * wt).mean()
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(mpnn.parameters(), 1.0)
                 optimizer.step()
@@ -295,7 +306,8 @@ class ChempropModel:
                 out = self._mpnn(bmg, V_d=None, X_d=None)
                 all_preds.append(out.cpu().numpy())
 
-        return np.concatenate(all_preds).flatten()
+        # Shape is (n, n_tasks); always return primary task (column 0) as 1-D array
+        return np.concatenate(all_preds)[:, 0]
 
     # ------------------------------------------------------------------
     # CV helper: predict on a held-out fold without re-training

@@ -23,8 +23,8 @@ from typing import List, Optional, Sequence, Union
 
 import numpy as np
 import pandas as pd
-from rdkit import Chem
-from rdkit.Chem import Descriptors, rdMolDescriptors
+from rdkit import Chem, DataStructs
+from rdkit.Chem import Descriptors, MACCSkeys, rdMolDescriptors
 from rdkit.Chem import rdFingerprintGenerator
 
 logger = logging.getLogger(__name__)
@@ -117,6 +117,24 @@ def fcfp4(smiles: Sequence[str], n_bits: int = 2048) -> np.ndarray:
             fps.append(np.zeros(n_bits, dtype=np.uint8))
         else:
             fps.append(_fcfp2_gen.GetFingerprintAsNumPy(mol).astype(np.uint8))
+    return np.vstack(fps)
+
+
+def maccs_fingerprints(smiles: Sequence[str]) -> np.ndarray:
+    """MACCS 167-bit structural key fingerprints.
+
+    Captures different activity cliffs than ECFP4 — de la Vega SAR analysis
+    found ECFP4 and MACCS identify ~90% non-overlapping cliff pairs on this dataset.
+    Bit 0 is always 0 (undefined in the MACCS spec); effective keys are bits 1-166.
+    """
+    fps = []
+    for smi in smiles:
+        mol = smiles_to_mol(smi)
+        arr = np.zeros(167, dtype=np.uint8)
+        if mol is not None:
+            fp = MACCSkeys.GenMACCSKeys(mol)
+            DataStructs.ConvertToNumpyArray(fp, arr)
+        fps.append(arr)
     return np.vstack(fps)
 
 
@@ -234,12 +252,14 @@ class FeaturePipeline:
         include_mordred: bool = True,
         include_ecfp6: bool = False,
         include_fcfp4: bool = False,
+        include_maccs: bool = False,
     ):
         self.n_bits = n_bits
         self.mordred_pca_components = mordred_pca_components
         self.include_mordred = include_mordred
         self.include_ecfp6 = include_ecfp6
         self.include_fcfp4 = include_fcfp4
+        self.include_maccs = include_maccs
 
         self._scaler = None
         self._var_selector = None
@@ -255,6 +275,8 @@ class FeaturePipeline:
             parts.append(ecfp6(smiles, self.n_bits))
         if self.include_fcfp4:
             parts.append(fcfp4(smiles, self.n_bits))
+        if self.include_maccs:
+            parts.append(maccs_fingerprints(smiles))
         return np.hstack(parts).astype(np.float32)
 
     def _build_rdkit_block(self, smiles: Sequence[str]) -> np.ndarray:
