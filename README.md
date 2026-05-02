@@ -13,7 +13,8 @@ OpenADMET PXR Blind Challenge — Activity Prediction Track
 
 | # | Script | Models | CV RAE | Leaderboard RAE |
 |---|--------|--------|--------|-----------------|
-| 8 | `submission8_emax.py` | TabPFN+CheMeleon + Delta + HTS-pretrained Chemprop (Emax multi-task) + RF (MACCS) (ElasticNet) | 0.5286 | pending |
+| 9 | `submission9_unimol.py` | Uni-Mol 3D + TabPFN+CheMeleon + Delta + HTS-pretrained Chemprop + RF (ElasticNet) | 0.5215 | **0.6074** (rank 42) |
+| 8 | `submission8_emax.py` | TabPFN+CheMeleon + Delta + HTS-pretrained Chemprop (Emax multi-task) + RF (MACCS) (ElasticNet) | 0.5286 | 0.6439 |
 | 7 | `submission7_tabpfn.py` | TabPFN+CheMeleon + Delta + HTS-pretrained Chemprop + kNN + RF (ElasticNet) | 0.5297 | 0.6358 |
 | 6 | `submission6_delta.py` | Delta + HTS-pretrained Chemprop + kNN + LGBM + RF (ElasticNet) | 0.5481 | 0.6583 |
 | 5 | `submission5_hts_pretrain.py` | HTS-pretrained Chemprop + scratch Chemprop + kNN + LGBM + RF (ElasticNet) | 0.5609 | 0.6615 |
@@ -25,6 +26,26 @@ OpenADMET PXR Blind Challenge — Activity Prediction Track
 ---
 
 ## Approach
+
+### Submission 9 — Uni-Mol 3D molecular model (best result)
+
+Submissions 5–8 all landed at CV ~0.527, despite adding new models and features. Every model in the ensemble represented molecules with 2D fingerprints (ECFP, MACCS, CheMeleon). The 2D plateau suggested the ensemble had extracted most available signal from topology alone.
+
+**Why 3D?** PXR has a large, flexible, buried binding pocket. Ligand binding is dominated by shape complementarity — how a molecule fills the cavity — not just connectivity. 3D conformational geometry is structurally invisible to 2D fingerprints, which encode atom neighborhoods but discard bond angles, torsions, and inter-atomic distances.
+
+**Uni-Mol** ([Zhou et al., 2023](https://openreview.net/forum?id=6K2RM6wVqKu)) is a transformer pretrained on 209M 3D molecular conformations from ZINC and PubChem. It encodes pairwise inter-atomic distances and 3D spatial relationships via SE(3)-equivariant attention, learning representations that reflect the shape of the electron density surface rather than the bond graph. Fine-tuned on PXR pEC50 for 10 epochs per CV fold (20 for final training).
+
+**Conformer generation**: RDKit ETKDGv3 (Cambridge Structural Database torsion angle priors) with MMFF optimization. We bypass `unimol_tools`' built-in `ConformerGen` (which uses Python multiprocessing and crashes when any molecule fails embedding) and pass atoms and coordinates directly to `DataHub`. Molecules that fail embedding are excluded from training and filled with training mean at inference.
+
+Key results:
+- **CV RAE: 0.5215** — broke the 0.527 plateau (best since Sub 5 started that plateau)
+- **Leaderboard RAE: 0.6074, rank 42** — best result of the competition
+- **CV→LB gap: 0.086** — narrowed from 0.106 in Sub 7; 3D representations generalize better to blind analog test compounds
+- **ElasticNet coefs**: `unimol`=0.304 (dominant), `tabpfn`=0.232, `chemprop_hts`=0.262, `delta`=0.085, `rf`=0.059
+
+Requires a CUDA GPU and `pip install unimol_tools`. Runtime ~1.4h on an A10G.
+
+---
 
 ### Submission 8 — Emax multi-task Chemprop + MACCS fingerprints
 
@@ -143,6 +164,12 @@ export HF_TOKEN=your_token_here
 
 ### 3. Generate a submission
 
+Submission 9 (Uni-Mol 3D, requires CUDA GPU + Python 3.11):
+```bash
+pip install unimol_tools "tabpfn==2.2.1" --no-deps
+python scripts/submission9_unimol.py
+```
+
 Submission 8 (Emax multi-task + MACCS, requires Python 3.11):
 ```bash
 pip install "tabpfn==2.2.1" --no-deps
@@ -188,7 +215,7 @@ python scripts/baseline_submission.py
 All scripts will:
 - Download all four data tiers from HuggingFace (cached to `data/hf_cache/`)
 - Compute fingerprints and descriptors
-- Run cross-validation (Butina cluster CV for Subs 5–8, scaffold CV for Subs 1–4) and print RAE per fold
+- Run cross-validation (Butina cluster CV for Subs 5–9, scaffold CV for Subs 1–4) and print RAE per fold
 - Train on the full training set
 - Save a validated submission CSV to `submissions/`
 
@@ -199,6 +226,7 @@ All scripts will:
 ```
 pxr-challenge-public/
 ├── scripts/
+│   ├── submission9_unimol.py            # Submission 9: Uni-Mol 3D transformer (best result, GPU required)
 │   ├── submission8_emax.py              # Submission 8: Emax multi-task Chemprop + MACCS RF
 │   ├── submission7_tabpfn.py            # Submission 7: TabPFN+CheMeleon in-context learning
 │   ├── submission6_delta.py             # Submission 6: delta learning + conc-aware HTS pretrain
@@ -215,6 +243,7 @@ pxr-challenge-public/
 │   ├── features/
 │   │   └── feature_engineering.py     # ECFP4/6, FCFP4, MACCS, RDKit, Mordred, Tanimoto utils
 │   ├── models/
+│   │   ├── unimol_model.py            # Uni-Mol 3D transformer; ETKDGv3 conformers; GPU required (Sub 9)
 │   │   ├── tabpfn_model.py            # TabPFN v2 + CheMeleon PCA; in-context learning (Sub 7)
 │   │   ├── delta_model.py             # Pairwise Δ pEC50 Chemprop; kNN-anchored inference
 │   │   ├── chemprop_model.py          # Chemprop v2 D-MPNN; x_d support; n_tasks multi-task; encoder-only transfer
