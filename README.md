@@ -13,6 +13,7 @@ OpenADMET PXR Blind Challenge — Activity Prediction Track
 
 | # | Script | Models | CV RAE | Leaderboard RAE |
 |---|--------|--------|--------|-----------------|
+| 12 | `submission12_crystal.py` | Sub 9 ensemble + PXR crystal Tanimoto in RF + TabPFN | 0.5208 | **0.5998** (rank 75/329, top 23%) |
 | 9 | `submission9_unimol.py` | Uni-Mol 3D + TabPFN+CheMeleon + Delta + HTS-pretrained Chemprop + RF (ElasticNet) | 0.5215 | **0.6074** (rank 42) |
 | 8 | `submission8_emax.py` | TabPFN+CheMeleon + Delta + HTS-pretrained Chemprop (Emax multi-task) + RF (MACCS) (ElasticNet) | 0.5286 | 0.6439 |
 | 7 | `submission7_tabpfn.py` | TabPFN+CheMeleon + Delta + HTS-pretrained Chemprop + kNN + RF (ElasticNet) | 0.5297 | 0.6358 |
@@ -26,6 +27,30 @@ OpenADMET PXR Blind Challenge — Activity Prediction Track
 ---
 
 ## Approach
+
+### Submission 12 — PXR crystal ligand Tanimoto features (best Phase 1 result)
+
+Key changes from Sub 9:
+
+- **PXR co-crystal Tanimoto** (`scripts/fetch_crystal_ligands.py`): Five ECFP4 Tanimoto similarity features are computed for every compound against 56 PXR co-crystal ligands sourced from the PDB via the OpenADMET re-refinement repository ([OpenADMET/pxr_xtal_re-refinement](https://github.com/OpenADMET/pxr_xtal_re-refinement)). Features: `max_sim`, `mean_sim`, `std_sim`, `top2_sim`, `top3_sim`. These 56 ligands are the experimentally confirmed binders of the exact PXR pocket being predicted — they encode scaffold proximity to known actives in a way that is orthogonal to pairwise ECFP4 self-similarity within the training set. Crucially, the crystal set is a fixed public reference; it is equally informative for both training and blind test compounds, so there is no data leakage.
+
+- **TabPFN augmented** (`TabPFNAugmented` in `submission12_crystal.py`): The 5 crystal similarity features are appended to the CheMeleon PCA(200) embedding before TabPFN in-context learning. This gives the transformer access to biology-anchored structural signal alongside the learned chemical-language representation.
+
+- **RF augmented**: The same 5 crystal features are appended to the ECFP4+ECFP6+MACCS+RDKit feature matrix used by Random Forest.
+
+- **Architecture unchanged**: delta, chemprop_hts, and unimol are identical to Sub 9.
+
+Key results:
+- **CV RAE: 0.5208** — marginal improvement from 0.5215 in Sub 9
+- **Leaderboard RAE: 0.5998, rank 75/329** — top 23% of field at Phase 1 close
+- **CV→LB gap: 0.079** — narrowed from 0.086 in Sub 9; crystal features confirmed generalizing to blind test compounds
+- **ElasticNet coefs**: `unimol`=0.290, `tabpfn_aug`=0.264, `chemprop_hts`=0.257, `delta`=0.083, `rf_aug`=0.051
+
+The narrowing CV→LB gap across Subs 9 and 12 suggests the ensemble is increasingly capturing signal that transfers to blind analogs rather than overfitting the scaffold structure of the training set.
+
+Requires a CUDA GPU. Runtime ~4 h on an A10G. Run `fetch_crystal_ligands.py` once before the submission script.
+
+---
 
 ### Submission 9 — Uni-Mol 3D molecular model (best result)
 
@@ -164,6 +189,13 @@ export HF_TOKEN=your_token_here
 
 ### 3. Generate a submission
 
+Submission 12 (crystal ligand Tanimoto + Uni-Mol 3D, requires CUDA GPU + Python 3.11):
+```bash
+pip install unimol_tools "tabpfn==2.2.1" --no-deps
+python scripts/fetch_crystal_ligands.py   # downloads 56 PXR co-crystal SMILES once
+python scripts/submission12_crystal.py
+```
+
 Submission 9 (Uni-Mol 3D, requires CUDA GPU + Python 3.11):
 ```bash
 pip install unimol_tools "tabpfn==2.2.1" --no-deps
@@ -215,9 +247,11 @@ python scripts/baseline_submission.py
 All scripts will:
 - Download all four data tiers from HuggingFace (cached to `data/hf_cache/`)
 - Compute fingerprints and descriptors
-- Run cross-validation (Butina cluster CV for Subs 5–9, scaffold CV for Subs 1–4) and print RAE per fold
+- Run cross-validation (Butina cluster CV for Subs 5–12, scaffold CV for Subs 1–4) and print RAE per fold
 - Train on the full training set
 - Save a validated submission CSV to `submissions/`
+
+Sub 12 additionally requires `data/pxr_crystal_ligands.csv` — generate it once with `python scripts/fetch_crystal_ligands.py`.
 
 ---
 
@@ -226,6 +260,8 @@ All scripts will:
 ```
 pxr-challenge-public/
 ├── scripts/
+│   ├── submission12_crystal.py          # Submission 12: + PXR crystal Tanimoto in RF + TabPFN (Phase 1 best, GPU required)
+│   ├── fetch_crystal_ligands.py         # Downloads 56 PXR co-crystal ligand SMILES from PDB (run once)
 │   ├── submission9_unimol.py            # Submission 9: Uni-Mol 3D transformer (best result, GPU required)
 │   ├── submission8_emax.py              # Submission 8: Emax multi-task Chemprop + MACCS RF
 │   ├── submission7_tabpfn.py            # Submission 7: TabPFN+CheMeleon in-context learning
