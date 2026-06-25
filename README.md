@@ -13,8 +13,8 @@ OpenADMET PXR Blind Challenge — Activity Prediction Track
 
 | # | Script | Models | CV RAE | Leaderboard RAE |
 |---|--------|--------|--------|-----------------|
-| 12 | `submission12_crystal.py` | Sub 9 ensemble + PXR crystal Tanimoto in RF + TabPFN | 0.5208 | **0.5998** (rank 75/329, top 23%) |
-| 9 | `submission9_unimol.py` | Uni-Mol 3D + TabPFN+CheMeleon + Delta + HTS-pretrained Chemprop + RF (ElasticNet) | 0.5215 | **0.6074** (rank 42) |
+| 12 | `submission12_crystal.py` | Sub 9 ensemble + PXR crystal Tanimoto in RF + TabPFN | 0.5208 | **0.5998** |
+| 9 | `submission9_unimol.py` | Uni-Mol 3D + TabPFN+CheMeleon + Delta + HTS-pretrained Chemprop + RF (ElasticNet) | 0.5215 | **0.6074** |
 | 8 | `submission8_emax.py` | TabPFN+CheMeleon + Delta + HTS-pretrained Chemprop (Emax multi-task) + RF (MACCS) (ElasticNet) | 0.5286 | 0.6439 |
 | 7 | `submission7_tabpfn.py` | TabPFN+CheMeleon + Delta + HTS-pretrained Chemprop + kNN + RF (ElasticNet) | 0.5297 | 0.6358 |
 | 6 | `submission6_delta.py` | Delta + HTS-pretrained Chemprop + kNN + LGBM + RF (ElasticNet) | 0.5481 | 0.6583 |
