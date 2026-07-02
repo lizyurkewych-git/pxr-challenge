@@ -86,7 +86,7 @@ RDKit2D physicochemical descriptors combined with PXR crystal ligand Tanimoto si
 
 ### Acknowledgements
 
-Thank you to the OpenADMET organizers for designing a well-structured challenge with meaningful data across multiple assay tiers and a clean validation framework. Thank you also to the community members who shared their insights along the way — with special thanks to [discoverybytes](https://github.com/discoverybytes/openadmet-pxr-blind-challenge/tree/main/activity-prediction), dargason, and [JacksonBurn].(https://gist.github.com/JacksonBurns/94cb5e7dda4d72bd876c947df92c5147). I enjoyed learning from everyone!
+Thank you to the OpenADMET organizers for designing a well-structured challenge with meaningful data across multiple assay tiers and a clean validation framework. Thank you also to the community members who shared their insights along the way — with special thanks to [discoverybytes](https://github.com/discoverybytes/openadmet-pxr-blind-challenge/tree/main/activity-prediction), dargason, and [JacksonBurn](https://gist.github.com/JacksonBurns/94cb5e7dda4d72bd876c947df92c5147). I enjoyed learning from everyone!
 
 ---
 
