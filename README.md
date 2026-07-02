@@ -9,292 +9,88 @@ OpenADMET PXR Blind Challenge — Activity Prediction Track
 
 ---
 
-## Submissions
+## Model Report | Phase 2 Submission
 
-| # | Script | Models | CV RAE | Leaderboard RAE |
-|---|--------|--------|--------|-----------------|
-| 12 | `submission12_crystal.py` | Sub 9 ensemble + PXR crystal Tanimoto in RF + TabPFN | 0.5208 | **0.5998** |
-| 9 | `submission9_unimol.py` | Uni-Mol 3D + TabPFN+CheMeleon + Delta + HTS-pretrained Chemprop + RF (ElasticNet) | 0.5215 | **0.6074** |
-| 8 | `submission8_emax.py` | TabPFN+CheMeleon + Delta + HTS-pretrained Chemprop (Emax multi-task) + RF (MACCS) (ElasticNet) | 0.5286 | 0.6439 |
-| 7 | `submission7_tabpfn.py` | TabPFN+CheMeleon + Delta + HTS-pretrained Chemprop + kNN + RF (ElasticNet) | 0.5297 | 0.6358 |
-| 6 | `submission6_delta.py` | Delta + HTS-pretrained Chemprop + kNN + LGBM + RF (ElasticNet) | 0.5481 | 0.6583 |
-| 5 | `submission5_hts_pretrain.py` | HTS-pretrained Chemprop + scratch Chemprop + kNN + LGBM + RF (ElasticNet) | 0.5609 | 0.6615 |
-| 4 | `submission4_foundation_models.py` | + CheMeleon + ChemBERTa foundation embeddings (two GBM tracks) | 0.6437 | 0.7643 |
-| 3 | `submission3_chemprop.py` | Chemprop D-MPNN + kNN + LGBM + XGBoost + RF (inv-RAE ensemble) | 0.6249 | 0.7511 |
-| 2 | `submission2_gbm_ensemble.py` | kNN + LGBM + XGBoost + RF (inv-RAE ensemble) | 0.6508 | 0.7962 |
-| 1 | `baseline_submission.py` | kNN + LightGBM | ~0.76 | 0.7999 |
+### Overview
+
+The final submission is a five-model stacked ensemble trained on all 4,392 available PXR activity measurements (primary DRC + Phase 1 unblinded compounds). The ensemble is blended via an ElasticNet meta-learner fit on out-of-fold predictions. The key Phase 2 advance was Uni-Mol multi-conformer inference averaging, which produced the largest single improvement of the phase.
+
+**Analog Set 1 held-out RAE: 0.5104** (253 Phase 1 compounds, held out throughout Phase 2 development)
 
 ---
 
-## Approach
+### Data
 
-### Submission 12 — PXR crystal ligand Tanimoto features (best Phase 1 result)
+**Primary DRC** (4,392 compounds after adding Phase 1 unblinded): Main training target. 316 reactive electrophiles (acrylamides, acrylates, aldehydes by SMARTS filter) were removed — these are assay artifacts rather than true PXR binders. PAINS and REOS compounds were intentionally retained; removing them hurt performance by degrading calibration at the inactive end of the activity landscape.
 
-Key changes from Sub 9:
+**HTS Screen** (21,003 compounds): Used exclusively for Chemprop pre-training via a 3-stage transfer learning pipeline (Tox21 → ChEMBL → HTS). Concentration was included as an input feature during pre-training.
 
-- **PXR co-crystal Tanimoto** (`scripts/fetch_crystal_ligands.py`): Five ECFP4 Tanimoto similarity features are computed for every compound against 56 PXR co-crystal ligands sourced from the PDB via the OpenADMET re-refinement repository ([OpenADMET/pxr_xtal_re-refinement](https://github.com/OpenADMET/pxr_xtal_re-refinement)). Features: `max_sim`, `mean_sim`, `std_sim`, `top2_sim`, `top3_sim`. These 56 ligands are the experimentally confirmed binders of the exact PXR pocket being predicted — they encode scaffold proximity to known actives in a way that is orthogonal to pairwise ECFP4 self-similarity within the training set. Crucially, the crystal set is a fixed public reference; it is equally informative for both training and blind test compounds, so there is no data leakage.
+**Counter-assay** (2,859 compounds, pEC50_null): Used as an auxiliary training *target* in multi-task Chemprop, not as an input feature. This distinction is critical — see the leakage incident below.
 
-- **TabPFN augmented** (`TabPFNAugmented` in `submission12_crystal.py`): The 5 crystal similarity features are appended to the CheMeleon PCA(200) embedding before TabPFN in-context learning. This gives the transformer access to biology-anchored structural signal alongside the learned chemical-language representation.
+**HTChem crude assay** (external): Additional PXR activity measurements from crude cell extracts, augmented into all model training at sample_weight=0.5. Ablation confirmed that downweighting (vs. full weight) improves holdout generalization.
 
-- **RF augmented**: The same 5 crystal features are appended to the ECFP4+ECFP6+MACCS+RDKit feature matrix used by Random Forest.
-
-- **Architecture unchanged**: delta, chemprop_hts, and unimol are identical to Sub 9.
-
-Key results:
-- **CV RAE: 0.5208** — marginal improvement from 0.5215 in Sub 9
-- **Leaderboard RAE: 0.5998, rank 75/329** — top 23% of field at Phase 1 close
-- **CV→LB gap: 0.079** — narrowed from 0.086 in Sub 9; crystal features confirmed generalizing to blind test compounds
-- **ElasticNet coefs**: `unimol`=0.290, `tabpfn_aug`=0.264, `chemprop_hts`=0.257, `delta`=0.083, `rf_aug`=0.051
-
-The narrowing CV→LB gap across Subs 9 and 12 suggests the ensemble is increasingly capturing signal that transfers to blind analogs rather than overfitting the scaffold structure of the training set.
-
-Requires a CUDA GPU. Runtime ~4 h on an A10G. Run `fetch_crystal_ligands.py` once before the submission script.
+**Validation strategy**: Phase 1 used Butina scaffold 5-fold CV. From Phase 2 onward, Analog Set 1 (253 Phase 1 unblinded compounds) was held out as a fixed test set. These compounds are structurally closer to the Phase 2 analog series than to the Butina CV folds, making holdout RAE a substantially better generalization signal. Scaffold CV consistently underestimated true performance by ~0.024 RAE units.
 
 ---
 
-### Submission 9 — Uni-Mol 3D molecular model (best result)
+### Ensemble Architecture
 
-Submissions 5–8 all landed at CV ~0.527, despite adding new models and features. Every model in the ensemble represented molecules with 2D fingerprints (ECFP, MACCS, CheMeleon). The 2D plateau suggested the ensemble had extracted most available signal from topology alone.
+| Model | Ensemble Weight |
+|-------|----------------|
+| Uni-Mol 3D Fine-tuning | 0.413 |
+| DeepDelta | 0.181 |
+| TabPFN + CheMeleon | 0.170 |
+| Random Forest | 0.111 |
+| Multi-task Chemprop (seed 7) | 0.035 |
+| Multi-task Chemprop (seed 42) | 0.027 |
 
-**Why 3D?** PXR has a large, flexible, buried binding pocket. Ligand binding is dominated by shape complementarity — how a molecule fills the cavity — not just connectivity. 3D conformational geometry is structurally invisible to 2D fingerprints, which encode atom neighborhoods but discard bond angles, torsions, and inter-atomic distances.
+Weights are ElasticNet stacker coefficients from the `phase2_final` run (trained on all 4,392 compounds).
 
-**Uni-Mol** ([Zhou et al., 2023](https://openreview.net/forum?id=6K2RM6wVqKu)) is a transformer pretrained on 209M 3D molecular conformations from ZINC and PubChem. It encodes pairwise inter-atomic distances and 3D spatial relationships via SE(3)-equivariant attention, learning representations that reflect the shape of the electron density surface rather than the bond graph. Fine-tuned on PXR pEC50 for 10 epochs per CV fold (20 for final training).
+**1. Uni-Mol 3D Fine-tuning (~0.41 ensemble weight)**
 
-**Conformer generation**: RDKit ETKDGv3 (Cambridge Structural Database torsion angle priors) with MMFF optimization. We bypass `unimol_tools`' built-in `ConformerGen` (which uses Python multiprocessing and crashes when any molecule fails embedding) and pass atoms and coordinates directly to `DataHub`. Molecules that fail embedding are excluded from training and filled with training mean at inference.
+Pre-trained Uni-Mol transformer fine-tuned on PXR pEC50. RDKit ETKDGv3 conformers are generated locally to avoid Uni-Mol's built-in ConformerGen, which crashes on embedding failures. The critical Phase 2 innovation: *inference averaging over 8 independently-seeded conformers per molecule*. Each forward pass uses a different 3D geometry; predictions are averaged before stacking. This improved Analog Set 1 holdout RAE from 0.5163 → 0.5104 — the largest Phase 2 gain. The stacker responded by increasing Uni-Mol's weight from 0.37 → 0.44 in the held-out development run; the final retrain on 4,392 compounds settled at 0.41, confirming genuine quality improvement rather than variance reduction.
 
-Key results:
-- **CV RAE: 0.5215** — broke the 0.527 plateau (best since Sub 5 started that plateau)
-- **Leaderboard RAE: 0.6074, rank 42** — best result of the competition
-- **CV→LB gap: 0.086** — narrowed from 0.106 in Sub 7; 3D representations generalize better to blind analog test compounds
-- **ElasticNet coefs**: `unimol`=0.304 (dominant), `tabpfn`=0.232, `chemprop_hts`=0.262, `delta`=0.085, `rf`=0.059
+**2. Multi-task Chemprop D-MPNN (~0.06 ensemble weight)**
 
-Requires a CUDA GPU and `pip install unimol_tools`. Runtime ~1.4h on an A10G.
+CheMeleon is a molecular foundation model pre-trained on large-scale chemical data that provides the initial atom and bond representations for this Chemprop architecture. The CheMeleon-initialized D-MPNN was then pre-trained in three stages — Tox21 → ChEMBL → HTS screen — before fine-tuning on PXR data. This staged transfer approach progressively narrows the domain from general toxicity to broad bioactivity to PXR-specific HTS signal, with concentration included as an input feature during the HTS stage.
 
----
+Fine-tuning used three output heads: pEC50 (primary), pEC50_null (counter-assay selectivity), and Emax (effect size). Two random seeds (42, 7) ensembled. MAE loss used throughout. The stacker assigned modest weight to this component in Phase 2 — Uni-Mol dominated on the analog test set — but Chemprop contributed meaningfully to ensemble diversity in earlier phases.
 
-### Submission 8 — Emax multi-task Chemprop + MACCS fingerprints
+**3. DeepDelta (~0.18 ensemble weight)**
 
-Key changes from Sub 7:
+Pairwise delta model. For each query compound, the k=5 nearest neighbors by Tanimoto similarity are identified and a model is trained on activity differences. Particularly well-suited to tight analog series where small structural perturbations produce predictable activity changes.
 
-- **Emax multi-task Chemprop** (`ChempropModel(n_tasks=2)`): The HTS-pretrained Chemprop fine-tuning step now predicts `[pEC50, Emax]` jointly. Emax (maximum efficacy vs. positive control, ~0–1 dimensionless) is available for all 4,139 training compounds and is fit from the same dose-response curve as pEC50. The two targets are mechanistically coupled — partial agonists (low Emax, structurally distinct from full agonists) carry complementary SAR information that shares the same molecular encoder. Multi-task training exploits this shared structure as an auxiliary signal, improving label efficiency for the primary pEC50 head. HTS pre-training remains single-task; the encoder-only transfer is unaffected (FFN is always re-initialized for the fine-tuning task count). At inference, only column 0 (pEC50 head) is returned.
-- **MACCS 167-bit structural keys for RF** (`FeaturePipeline(include_maccs=True)`): Added to the RF feature matrix alongside ECFP4/6 and RDKit descriptors. De la Vega (2026) SAR analysis of this dataset found ECFP4 and MACCS identify ~90% non-overlapping activity cliff pairs — MACCS gives RF access to cliff information structurally invisible to circular fingerprints.
-- **kNN and LGBM dropped**: Sub 7 ElasticNet assigned coef=0.04 and 0.00 respectively after L1 regularization. Removing them reduces compute and lets the stacker redistribute weight to better models.
-- **ElasticNet result**: `tabpfn` remained dominant (coef=0.423), followed by `chemprop_hts` (0.321), `delta` (0.167), `rf` (0.153), `chemprop_scratch` (−0.120). RF weight increased from 0.127 → 0.153, confirming MACCS added orthogonal signal.
+**4. TabPFN + CheMeleon Embeddings (~0.17 ensemble weight)**
 
-ElasticNet OOF RAE of **0.5286** (improved from 0.5297 in Sub 7).
+CheMeleon embeddings are used here independently of Chemprop — the foundation model is applied directly to each molecule to produce a fixed-length representation, which is passed to TabPFN as input features. TabPFN is a transformer-based in-context learner that treats the entire training set as context at inference time, making it particularly effective for small-to-medium tabular datasets. This combination of chemistry-aware embeddings with an in-context learner was a strong standalone performer (CV RAE ~0.57). TabICL was evaluated as a replacement for TabPFN but showed consistent holdout regression across multiple trials and was excluded.
 
----
+**5. Random Forest (~0.11 ensemble weight)**
 
-### Submission 7 — TabPFN + CheMeleon in-context learning
+RDKit2D physicochemical descriptors combined with PXR crystal ligand Tanimoto similarity features — similarity scores to co-crystallized ligands from known PXR crystal structures. The crystal features provided a consistent small gain by anchoring predictions to structurally validated active geometries. ECFP4/ECFP6 were evaluated but provided less signal than RDKit2D for this target.
 
-Key changes from Sub 6:
-
-- **TabPFN + CheMeleon** (`src/models/tabpfn_model.py`): a TabPFN v2 regressor backed by frozen 2048-dim CheMeleon embeddings compressed via PCA(200). TabPFN performs *in-context learning* — there is no gradient training step. At prediction time, the full `(X_train, y_train)` is passed through a transformer pretrained on millions of synthetic tabular datasets, which adaptively weights each training compound's contribution to each test prediction. This is fundamentally different from Sub 4's CheMeleon + LGBM approach: LGBM fits a fixed decision tree and forgets the training labels at test time; TabPFN sees all 4,139 training labels during every prediction. Motivated by Ben Hicham et al. (2025), which showed TabPFN + CheMeleon achieves up to 100% win rate on the MoleculeACE activity cliff benchmark — structurally identical to our analog-series test set.
-- **Installation note**: `tabpfn==2.2.1` must be installed with `--no-deps` to avoid a `huggingface-hub` version conflict with `transformers` (TabPFN 2.x pins `huggingface-hub<1` but transformers requires `>=1.5.0`; the `--no-deps` flag keeps the existing compatible version).
-- **ElasticNet result**: `tabpfn` was the dominant contributor (coef=0.42), surpassing `chemprop_hts` (0.33). `chemprop_scratch` received a small negative coefficient (−0.12), acting as a bias corrector. `lgbm` was zeroed out.
-
-ElasticNet OOF RAE of **0.5297** is the best result to date (improved from 0.5481 in Sub 6).
+**Meta-learner**: ElasticNet stacking (l1_ratio=0.7, 5-fold inner CV). Extensive l1_ratio tuning confirmed 0.7 was already near-optimal — none of four alternatives (0.2, 0.4, 0.6, 0.9) improved holdout RAE.
 
 ---
 
-### Submission 6 — Pairwise delta learning + concentration-aware HTS pre-training
+### What Didn't Work
 
-Key changes from Sub 5:
+**Counter-assay delta as input feature (critical leakage)**: One submission used pEC50_null as a direct RF/TabPFN input feature. This achieved a deceptive CV RAE of 0.470 but a leaderboard RAE of 0.845 — the worst result of the competition run. The counter-assay data is available for ~64% of training compounds but 0% of the 513 blinded test compounds; all test predictions received delta=0, collapsing the model. Multi-task Chemprop uses pEC50_null as a training target rather than an input, which is fundamentally safe. This incident is shared in detail because the failure mode was subtle and others may encounter it.
 
-- **Pairwise delta learning** (`src/models/delta_model.py`): a Chemprop D-MPNN is trained on all pairwise activity differences — input is (SMILES_i, SMILES_j), target is pEC50_i − pEC50_j. At inference, each test compound is anchored to its 10 nearest training neighbors: `pred(t) = mean(y_n + Δ(t, n))`. This directly optimizes for relative activity within scaffold families, which is exactly what the analog-series test set requires. Activity cliff pairs (Tanimoto ≥ 0.7, |Δ pEC50| ≥ 1.0) are oversampled 3× per epoch. Antisymmetry averaging at inference: `Δ(t,n) = 0.5 × (forward − reverse)`.
-- **Concentration-aware HTS pre-training** (`prepare_hts_concentration_data` in `hts_pretrain.py`): instead of Hill-fitting 4 concentrations into a single pseudo-pEC50, all 4 dose-response points per compound are kept as separate training rows, with `log10[concentration_M]` passed as a molecule-level descriptor (`x_d`) to the Chemprop FFN. This gives ~21K training rows (4× more than Hill-fitting) with no R² acceptance filter that previously discarded borderline-active compounds.
-- **Encoder-only transfer**: only `message_passing.*` weights are transferred from HTS pretraining to fine-tuning. The FFN is always re-initialized, preventing size mismatches when the pre-training uses `x_d` but fine-tuning does not.
-- **ElasticNet result**: `chemprop_scratch` was assigned a zero coefficient and effectively dropped. The strongest contributors were `chemprop_hts` (0.38), `rf` (0.29), `delta` (0.20), `knn` (0.06), `lgbm` (0.01).
+**TabICL**: Improved CV RAE by ~0.005 but hurt holdout RAE by ~0.008 across multiple trials. Excluded.
 
-ElasticNet OOF RAE of 0.5481 is the best result to date (improved from 0.5609 in Sub 5).
+**Series-aware DeepDelta**: Modification to make the delta model aware of analog series membership. Three independent trials all showed holdout regression. Excluded.
 
----
-
-### Submission 5 — HTS pre-training + ElasticNet stacking + Butina CV
-
-Key changes from Sub 4:
-
-- **HTS pre-training**: Chemprop is first pre-trained on ~5,500 PXR HTS compounds (21,003 rows at 4 concentrations → Hill sigmoid fit → pseudo-pEC50), then fine-tuned on the 4,139 primary DRC compounds.
-- **Hill sigmoid fitting** (`src/models/hts_pretrain.py`): fits `R(C) = Rmax × Cⁿ / (EC50ⁿ + Cⁿ)` (n fixed at 1.5) per compound. R² ≥ 0.5 and pEC50 ∈ [3.5, 9.0] required; inactive and poorly-fit compounds are dropped.
-- **Two Chemprop variants**: scratch (random init) and HTS-pretrained (lower fine-tuning LR = 5×10⁻⁴). Both use 2 seeds in CV, 3 seeds for final training, with predictions averaged.
-- **ElasticNet stacking** (`ElasticNetStacker` in `stack_and_submit.py`): replaces hand-tuned inverse-RAE weighting. A `StandardScaler + ElasticNetCV` meta-learner is trained on out-of-fold predictions from all five base models.
-- **Butina cluster CV** (`ButinaKFold` in `validate.py`): replaces Murcko scaffold CV. Clusters by ECFP4 Tanimoto similarity (threshold=0.4) using the Butina algorithm; entire clusters are held out per fold.
-- **Foundation embeddings dropped**: CheMeleon and ChemBERTa (Sub 4) did not improve leaderboard RAE.
-
-Largest single-submission leaderboard improvement to date: 0.7643 → 0.6615 (rank 109 → 64).
+**Training conformer resampling (Uni-Mol)**: Selecting one random conformer per molecule before each fit() call — an approximation of true per-epoch resampling — introduced training noise without benefit. Holdout 0.5128 vs inference-averaging-only 0.5104. Zero-cost inference averaging was strictly superior.
 
 ---
 
-### Submission 4 — Foundation model embeddings (CheMeleon + ChemBERTa)
+### Acknowledgements
 
-Adds two pretrained molecular embedding models as additional feature blocks:
-- **CheMeleon** (2048-dim): pretrained Chemprop D-MPNN fingerprints, checkpoint downloaded from Zenodo
-- **ChemBERTa** (384-dim): `DeepChem/ChemBERTa-77M-MTR` SMILES-based BERT, mean-pooled token embeddings
-
-Both blocks are PCA-compressed to 200 components and used to train a separate "foundation" GBM track alongside the traditional ECFP4+RDKit track. Embeddings are cached to `data/embed_cache/`.
-
-Ensemble: Chemprop + kNN + LGBM_traditional + LGBM_foundation + XGB_foundation + RF_foundation (inverse-RAE weights).
-
-Result: foundation embeddings added noise rather than signal (leaderboard RAE increased vs Sub 3). Dropped in Sub 5.
+Thank you to the OpenADMET organizers for designing a well-structured challenge with meaningful data across multiple assay tiers and a clean validation framework. Thank you also to the community members who shared their insights along the way — with special thanks to [discoverybytes](https://github.com/discoverybytes/openadmet-pxr-blind-challenge/tree/main/activity-prediction), dargason, and [JacksonBurn].(https://gist.github.com/JacksonBurns/94cb5e7dda4d72bd876c947df92c5147). I enjoyed learning from everyone!
 
 ---
 
-### Submission 3 — Chemprop D-MPNN + GBM ensemble
-
-Adds a Chemprop v2 message-passing neural network (D-MPNN) trained directly on molecular graphs:
-- Chemprop D-MPNN (hidden_size=300, depth=3, 100 epochs) with snapshot ensembling (last 5 epoch checkpoints averaged)
-- Same kNN + LightGBM + XGBoost + RF models from Submission 2
-- All five models combined via inverse-RAE weights
-
-Requires Python 3.11 (`chemprop>=2.1.0`).
-
----
-
-### Submission 2 — 4-model inverse-RAE weighted ensemble
-
-Adds XGBoost and Random Forest to the ensemble, with weights proportional to inverse CV RAE. New features:
-- ECFP6 fingerprints (radius=3) added to the feature matrix
-- Activity cliff reweighting: compounds in cliff pairs (Tanimoto ≥ 0.7, |ΔpEC50| ≥ 1.0) get 2× training weight
-- Non-specific compound downweighting: counter-assay flagged compounds get 0.3× weight
-- Inverse-variance weights from experimental SE
-
-Uses scaffold-stratified 5-fold CV (Murcko scaffolds).
-
----
-
-### Submission 1 — kNN + LightGBM baseline
-
-Ensemble of Tanimoto k-nearest-neighbor (kNN) and LightGBM regression using:
-- ECFP4 binary fingerprints (2048 bits, radius=2)
-- Count-based Morgan fingerprints
-- RDKit physicochemical descriptors (~50)
-- Mordred 2D descriptors (PCA-compressed to 200 dimensions)
-
----
-
-## Quickstart
-
-### 1. Install dependencies
-
-```bash
-pip install -r requirements.txt
-brew install libomp  # required for LightGBM on macOS
-```
-
-### 2. Set HuggingFace token (optional, suppresses rate-limit warnings)
-
-```bash
-export HF_TOKEN=your_token_here
-```
-
-### 3. Generate a submission
-
-Submission 12 (crystal ligand Tanimoto + Uni-Mol 3D, requires CUDA GPU + Python 3.11):
-```bash
-pip install unimol_tools "tabpfn==2.2.1" --no-deps
-python scripts/fetch_crystal_ligands.py   # downloads 56 PXR co-crystal SMILES once
-python scripts/submission12_crystal.py
-```
-
-Submission 9 (Uni-Mol 3D, requires CUDA GPU + Python 3.11):
-```bash
-pip install unimol_tools "tabpfn==2.2.1" --no-deps
-python scripts/submission9_unimol.py
-```
-
-Submission 8 (Emax multi-task + MACCS, requires Python 3.11):
-```bash
-pip install "tabpfn==2.2.1" --no-deps
-.venv311/bin/python scripts/submission8_emax.py
-```
-
-Submission 7 (TabPFN + CheMeleon + full Sub 6 stack, requires Python 3.11):
-```bash
-pip install "tabpfn==2.2.1" --no-deps
-.venv311/bin/python scripts/submission7_tabpfn.py
-```
-
-Submission 6 (pairwise delta learning + concentration-aware HTS pre-training, requires Python 3.11):
-```bash
-.venv311/bin/python scripts/submission6_delta.py
-```
-
-Submission 5 (HTS pre-training + ElasticNet stacking, requires Python 3.11):
-```bash
-.venv311/bin/python scripts/submission5_hts_pretrain.py
-```
-
-Submission 4 (foundation model embeddings, requires Python 3.11):
-```bash
-.venv311/bin/python scripts/submission4_foundation_models.py
-```
-
-Submission 3 (Chemprop + GBM ensemble, requires Python 3.11):
-```bash
-.venv311/bin/python scripts/submission3_chemprop.py
-```
-
-Submission 2 ensemble:
-```bash
-python scripts/submission2_gbm_ensemble.py
-```
-
-Submission 1 baseline:
-```bash
-python scripts/baseline_submission.py
-```
-
-All scripts will:
-- Download all four data tiers from HuggingFace (cached to `data/hf_cache/`)
-- Compute fingerprints and descriptors
-- Run cross-validation (Butina cluster CV for Subs 5–12, scaffold CV for Subs 1–4) and print RAE per fold
-- Train on the full training set
-- Save a validated submission CSV to `submissions/`
-
-Sub 12 additionally requires `data/pxr_crystal_ligands.csv` — generate it once with `python scripts/fetch_crystal_ligands.py`.
-
----
-
-## Project Structure
-
-```
-pxr-challenge-public/
-├── scripts/
-│   ├── submission12_crystal.py          # Submission 12: + PXR crystal Tanimoto in RF + TabPFN (Phase 1 best, GPU required)
-│   ├── fetch_crystal_ligands.py         # Downloads 56 PXR co-crystal ligand SMILES from PDB (run once)
-│   ├── submission9_unimol.py            # Submission 9: Uni-Mol 3D transformer (best result, GPU required)
-│   ├── submission8_emax.py              # Submission 8: Emax multi-task Chemprop + MACCS RF
-│   ├── submission7_tabpfn.py            # Submission 7: TabPFN+CheMeleon in-context learning
-│   ├── submission6_delta.py             # Submission 6: delta learning + conc-aware HTS pretrain
-│   ├── submission5_hts_pretrain.py      # Submission 5: HTS pre-training + ElasticNet stacking
-│   ├── submission4_foundation_models.py # Submission 4: + CheMeleon + ChemBERTa embeddings
-│   ├── submission3_chemprop.py          # Submission 3: Chemprop D-MPNN + GBM ensemble
-│   ├── submission2_gbm_ensemble.py      # Submission 2: kNN + LGBM + XGBoost + RF ensemble
-│   └── baseline_submission.py           # Submission 1: kNN + LightGBM
-├── src/
-│   ├── data/
-│   │   ├── load_data.py               # HuggingFace loading, SMILES canonicalization,
-│   │   │                                inverse-variance weights, counter-assay flagging
-│   │   └── cliff_analysis.py          # Activity cliff detection and annotation
-│   ├── features/
-│   │   └── feature_engineering.py     # ECFP4/6, FCFP4, MACCS, RDKit, Mordred, Tanimoto utils
-│   ├── models/
-│   │   ├── unimol_model.py            # Uni-Mol 3D transformer; ETKDGv3 conformers; GPU required (Sub 9)
-│   │   ├── tabpfn_model.py            # TabPFN v2 + CheMeleon PCA; in-context learning (Sub 7)
-│   │   ├── delta_model.py             # Pairwise Δ pEC50 Chemprop; kNN-anchored inference
-│   │   ├── chemprop_model.py          # Chemprop v2 D-MPNN; x_d support; n_tasks multi-task; encoder-only transfer
-│   │   ├── hts_pretrain.py            # Hill fitting + concentration-aware HTS data prep
-│   │   ├── local_models.py            # TanimotoKNN, TanimotoGP
-│   │   ├── gbm_models.py              # LightGBM, XGBoost, RandomForest wrappers
-│   │   └── foundation_embeddings.py   # CheMeleon + ChemBERTa pretrained embedders (Sub 4)
-│   ├── evaluation/
-│   │   └── validate.py                # RAE metric, bootstrap CI, ScaffoldKFold, ButinaKFold
-│   └── ensemble/
-│       └── stack_and_submit.py        # WeightedEnsemble, ElasticNetStacker, submission pipeline
-├── data/                              # Downloaded datasets (gitignored)
-├── submissions/                       # Output submission CSVs (gitignored)
-└── requirements.txt
-```
+*Phase 2 submission generated by `scripts/run_experiment.py` with config `phase2_final.json`. Submission validated against the official OpenADMET validator prior to upload.*
 
 ---
 

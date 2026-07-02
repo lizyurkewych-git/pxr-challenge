@@ -1,0 +1,72 @@
+{
+  "experiment_id": "phase2_final",
+  "description": "Phase 2 final submission. Trains on all 4392 compounds (include_phase1=true). baseline_rae=1.0 forces accepted=True so submission CSV is auto-generated. UPDATE models.unimol flags below based on winning multi-conformer experiment before running.",
+  "device": "cuda",
+  "include_phase1": true,
+  "baseline_rae": 1.0,
+  "acceptance_threshold": 0.0,
+  "cv_splits": 5,
+  "filter_electrophiles": true,
+  "chemprop_mt_pretrain_ckpt": "logs/hts_pretrain_checkpoint.pt",
+  "meta_learner": "elasticnet",
+  "models": {
+    "delta": {
+      "enabled": true,
+      "epochs_cv": 20,
+      "epochs_full": 26,
+      "k_neighbors": 5,
+      "series_aware": false
+    },
+    "chemprop_scratch": {
+      "enabled": false
+    },
+    "chemprop_hts": {
+      "enabled": false,
+      "seeds": []
+    },
+    "chemprop_mt": {
+      "enabled": true,
+      "seeds": [42, 7],
+      "epochs_cv": 65,
+      "epochs_full": 81,
+      "lr": 0.00011,
+      "use_pmi": false
+    },
+    "tabpfn": {
+      "enabled": true,
+      "n_estimators": 64
+    },
+    "rf": {
+      "enabled": true,
+      "include_ecfp6": false,
+      "include_maccs": false,
+      "include_rdkit2d": true,
+      "include_crystal_sim": true,
+      "include_permeability": false
+    },
+    "gp": {
+      "enabled": false
+    },
+    "unimol": {
+      "enabled": true,
+      "epochs_cv": 5,
+      "epochs_full": 10,
+      "lr": 0.0001,
+      "batch_size": 16,
+      "use_conformer_resampling": false,
+      "n_train_conformers": 1,
+      "n_infer_conformers": 8
+    },
+    "molformer": {
+      "enabled": false
+    }
+  },
+  "proposal_strategy": "manual_sweep",
+  "htchem_augmentation": {
+    "enabled": true,
+    "subsets": ["crude"],
+    "models": ["chemprop_mt", "delta", "tabpfn", "rf", "unimol"],
+    "crude_weight": 0.5
+  },
+  "restack_on_retry": true
+}
